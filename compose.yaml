@@ -1,0 +1,122 @@
+name: pixflow-lab
+
+services:
+  postgres:
+    image: postgres:18.4-alpine
+    environment:
+      POSTGRES_DB: ${PIXFLOW_DB_NAME:-pixflow}
+      POSTGRES_USER: ${PIXFLOW_DB_USER:-pixflow_app}
+      POSTGRES_PASSWORD: ${PIXFLOW_DB_PASSWORD:-pixflow_lab_dev_only}
+    ports:
+      - "127.0.0.1:${PIXFLOW_DB_PORT:-55432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+    mem_limit: 768m
+    cpus: 1.0
+    security_opt:
+      - no-new-privileges:true
+
+  flyway:
+    image: flyway/flyway:11.20.2-alpine
+    command:
+      - -connectRetries=30
+      - -connectRetriesInterval=2
+      - -validateMigrationNaming=true
+      - -locations=filesystem:/flyway/migrations
+      - migrate
+    environment:
+      FLYWAY_URL: jdbc:postgresql://postgres:5432/${PIXFLOW_DB_NAME:-pixflow}
+      FLYWAY_USER: ${PIXFLOW_DB_USER:-pixflow_app}
+      FLYWAY_PASSWORD: ${PIXFLOW_DB_PASSWORD:-pixflow_lab_dev_only}
+    volumes:
+      - ./infra/postgres/migrations:/flyway/migrations:ro
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    mem_limit: 256m
+    cpus: 0.5
+    security_opt:
+      - no-new-privileges:true
+
+  kafka:
+    image: apache/kafka:4.1.1
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:29093
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_LISTENERS: CONTROLLER://:29093,INTERNAL://:9092,EXTERNAL://:19092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:9092,EXTERNAL://localhost:${PIXFLOW_KAFKA_PORT:-19092}
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_NUM_PARTITIONS: 3
+      KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_LOG_SEGMENT_BYTES: 268435456
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
+      KAFKA_HEAP_OPTS: -Xms256m -Xmx512m
+    ports:
+      - "127.0.0.1:${PIXFLOW_KAFKA_PORT:-19092}:19092"
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+    mem_limit: 1g
+    cpus: 1.0
+    security_opt:
+      - no-new-privileges:true
+
+  kafka-init:
+    image: apache/kafka:4.1.1
+    command:
+      - /bin/bash
+      - -ec
+      - |
+        for topic in payment.requested.v1 payment.result.v1 payment.dlt.v1; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic "$${topic}" --partitions 3 --replication-factor 1
+        done
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list
+    networks:
+      - backend
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: "no"
+    mem_limit: 256m
+    cpus: 0.5
+    security_opt:
+      - no-new-privileges:true
+
+networks:
+  backend:
+    name: pixflow-lab-backend
+    driver: bridge
+
+volumes:
+  postgres_data:
+    name: pixflow-lab-postgres-data
+  kafka_data:
+    name: pixflow-lab-kafka-data

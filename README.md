@@ -4,7 +4,7 @@ Laboratório local de pagamentos Pix **inteiramente fictícios**, orientado a Az
 
 ## Estado atual
 
-Este repositório está na **ETAPA 00**: estrutura Maven, decisões arquiteturais e pré-flight. Nenhum serviço de infraestrutura ou aplicação foi iniciado ainda.
+Este repositório concluiu a **ETAPA 01**: PostgreSQL 18.4 Alpine, Kafka 4.1.1 KRaft e migrations Flyway 11.20.2. Microsserviços Java ainda não foram implementados.
 
 ## Pré-requisitos verificados
 
@@ -41,10 +41,23 @@ cd C:\poc\pixflow-lab
 git status --short
 ```
 
+## Infraestrutura local
+
+```powershell
+cd C:\poc\pixflow-lab
+.\scripts\bootstrap.ps1 # cria .env somente se ausente, sobe e valida
+.\scripts\status.ps1
+.\scripts\verify.ps1
+.\scripts\logs.ps1
+.\scripts\down.ps1      # preserva volumes
+```
+
+PostgreSQL fica disponível apenas no loopback em `127.0.0.1:55432`; Kafka em `127.0.0.1:19092`. Entre containers, use `postgres:5432` e `kafka:9092`. Consulte [Infraestrutura](docs/INFRASTRUCTURE.md).
+
 ## Isolamento obrigatório
 
-- Todo futuro comando Compose deve usar `docker compose -p pixflow_lab ...` dentro deste repositório.
-- Não usar `container_name`; rede, volumes e recursos serão gerenciados pelo projeto `pixflow_lab`.
+- Todo futuro comando Compose deve usar `docker compose -p pixflow-lab ...` dentro deste repositório.
+- Não usar `container_name`; rede, volumes e recursos serão gerenciados pelo projeto `pixflow-lab`.
 - O container existente `qpo-postgres-phase09` e seus volumes não podem ser parados, reiniciados, removidos, renomeados ou modificados.
 - Não executar prune/reset global. Um futuro reset deverá exigir confirmação e atuar apenas nos recursos desta POC.
 - Portas 8080, 55432, 9092 e 6379 estavam livres no pré-flight, mas deverão ser verificadas novamente imediatamente antes do uso.
@@ -55,6 +68,7 @@ git status --short
 - [Decisões](docs/DECISOES.md)
 - [Limitações](docs/LIMITACOES.md)
 - [Relatório de testes](docs/TEST_REPORT.md)
+- [Infraestrutura](docs/INFRASTRUCTURE.md)
 - [Destino Azure](deploy/azure/README.md)
 
 ## Segurança
