@@ -25,3 +25,12 @@ Nenhum resultado funcional, de carga ou integração é alegado nesta etapa.
 | Isolamento | PASS | Rede e dois volumes exclusivos com prefixo `pixflow-lab`; nenhum volume QPO referenciado. |
 
 Os gates funcionais G01–G24 continuam `NOT_RUN`; dependem das etapas de aplicação posteriores.
+
+## ETAPA 01A
+
+| Verificação | Estado | Evidência |
+|---|---|---|
+| Compose com profile inspect | PASS | Configuração válida; portas 8085/8086 publicadas somente em 127.0.0.1. |
+| Kafka UI read-only | PASS | HTTP 200; três tópicos reais e partições/offsets retornados pela API; mensagem sintética publicada e consumida. |
+| PostgreSQL Viewer read-only | PASS | HTTP 200; seis tabelas visíveis por SELECT; UPDATE negado pelo usuário `pixflow_inspector`. |
+| Reinício e preservação do core | PASS | Painéis reiniciados; Kafka/PostgreSQL permaneceram ativos, tópicos preservados e Flyway continuou em 1/1 migration. |

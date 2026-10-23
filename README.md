@@ -54,6 +54,29 @@ cd C:\poc\pixflow-lab
 
 PostgreSQL fica disponível apenas no loopback em `127.0.0.1:55432`; Kafka em `127.0.0.1:19092`. Entre containers, use `postgres:5432` e `kafka:9092`. Consulte [Infraestrutura](docs/INFRASTRUCTURE.md).
 
+### Visualização opcional da infraestrutura
+
+Os painéis do profile `inspect` são locais, opcionais e não sobem com o baseline:
+
+```powershell
+cd C:\poc\pixflow-lab
+.\scripts\inspect.ps1 Start
+.\scripts\inspect.ps1 Status
+```
+
+- Kafka UI: http://127.0.0.1:8085 — tópicos, partições, mensagens e consumer groups em modo read-only.
+- PostgreSQL Viewer: http://127.0.0.1:8086 — schemas, tabelas, índices e consultas `SELECT` com usuário SQL restrito.
+
+Para inspecionar Kafka, abra o cluster `pixflow-lab` e selecione um dos tópicos `payment.*.v1`. No pgweb, navegue pelo schema `public` ou execute apenas consultas como `SELECT * FROM flyway_schema_history ORDER BY installed_rank`.
+
+Pare somente os painéis, sem afetar PostgreSQL ou Kafka:
+
+```powershell
+.\scripts\inspect.ps1 Stop
+```
+
+O script gera uma senha aleatória em `secrets/pgweb_password.txt`, já ignorada pelo Git. O pgweb também usa `--readonly`, e o usuário `pixflow_inspector` não possui privilégios de escrita. Limites adicionais: Kafka UI 512 MiB/0,5 CPU; pgweb 128 MiB/0,25 CPU; inicializador SQL 128 MiB/0,25 CPU.
+
 ## Isolamento obrigatório
 
 - Todo futuro comando Compose deve usar `docker compose -p pixflow-lab ...` dentro deste repositório.

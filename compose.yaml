@@ -110,6 +110,88 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  inspector-db-init:
+    image: postgres:18.4-alpine
+    profiles: ["inspect"]
+    environment:
+      PGHOST: postgres
+      PGPORT: 5432
+      PGDATABASE: ${PIXFLOW_DB_NAME:-pixflow}
+      PGUSER: ${PIXFLOW_DB_USER:-pixflow_app}
+      PGPASSWORD: ${PIXFLOW_DB_PASSWORD:-pixflow_lab_dev_only}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        inspector_password="$$(cat /run/secrets/pgweb_password)"
+        psql --set=ON_ERROR_STOP=1 --set=inspector_password="$${inspector_password}" --set=database_name="$${PGDATABASE}" --set=owner_name="$${PGUSER}" --file=/opt/pixflow/create-inspector-role.sql
+    volumes:
+      - ./infra/postgres/inspect/create-inspector-role.sql:/opt/pixflow/create-inspector-role.sql:ro
+    secrets:
+      - pgweb_password
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+    mem_limit: 128m
+    cpus: 0.25
+    security_opt:
+      - no-new-privileges:true
+
+  kafka-ui:
+    image: ghcr.io/kafbat/kafka-ui:v1.5.0
+    profiles: ["inspect"]
+    environment:
+      KAFKA_CLUSTERS_0_NAME: pixflow-lab
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_READONLY: "true"
+      DYNAMIC_CONFIG_ENABLED: "false"
+      LOGGING_LEVEL_ROOT: WARN
+      LOGGING_LEVEL_IO_KAFBAT_UI: INFO
+    ports:
+      - "127.0.0.1:${PIXFLOW_KAFKA_UI_PORT:-8085}:8080"
+    networks:
+      - backend
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+    security_opt:
+      - no-new-privileges:true
+
+  pgweb:
+    image: sosedoff/pgweb:0.17.0
+    profiles: ["inspect"]
+    environment:
+      PGWEB_DB_NAME: ${PIXFLOW_DB_NAME:-pixflow}
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        inspector_password="$$(cat /run/secrets/pgweb_password)"
+        printf 'postgres:5432:%s:pixflow_inspector:%s\n' "$${PGWEB_DB_NAME}" "$${inspector_password}" > /run/pgweb/.pgpass
+        chmod 600 /run/pgweb/.pgpass
+        unset inspector_password
+        exec /usr/bin/pgweb --bind=0.0.0.0 --listen=8081 --host=postgres --port=5432 --user=pixflow_inspector --db="$${PGWEB_DB_NAME}" --ssl=disable --passfile=/run/pgweb/.pgpass --readonly
+    ports:
+      - "127.0.0.1:${PIXFLOW_PGWEB_PORT:-8086}:8081"
+    secrets:
+      - pgweb_password
+    tmpfs:
+      - /run/pgweb:uid=1000,gid=1000,mode=0700,size=64k
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.25
+    security_opt:
+      - no-new-privileges:true
+
 networks:
   backend:
     name: pixflow-lab-backend
@@ -120,3 +202,7 @@ volumes:
     name: pixflow-lab-postgres-data
   kafka_data:
     name: pixflow-lab-kafka-data
+
+secrets:
+  pgweb_password:
+    file: ./secrets/pgweb_password.txt
