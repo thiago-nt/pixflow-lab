@@ -1,1 +1,71 @@
-const $=id=>document.getElementById(id);let running=true;$('key').value=crypto.randomUUID();$('newKey').onclick=()=>$('key').value=crypto.randomUUID();async function refresh(){if(!running||document.hidden)return;const r=await fetch('/internal/lab/payments?size=50');const p=await r.json();$('cards').innerHTML=p.items.map(x=>`<button data-id="${x.id}"><b>${x.status}</b><br>${x.id}<br>R$ ${x.money.amount}<br>${x.merchantReference}</button>`).join('');document.querySelectorAll('[data-id]').forEach(b=>b.onclick=async()=>{const d=await fetch('/internal/lab/payments/'+b.dataset.id).then(x=>x.json());$('detailText').textContent=JSON.stringify(d,null,2);$('detail').showModal()});$('updated').textContent='Atualizado '+new Date().toLocaleTimeString()}$('create').onsubmit=async e=>{e.preventDefault();let start=performance.now();const r=await fetch('/api/v1/payments',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':$('key').value},body:JSON.stringify({accountId:$('account').value,amount:$('amount').value,currency:'BRL',merchantReference:$('reference').value})});const body=await r.json();$('result').textContent=`HTTP ${r.status} · ${Math.round(performance.now()-start)} ms\n`+JSON.stringify(body,null,2);refresh()};$('refresh').onclick=refresh;$('pause').onclick=()=>{running=!running;$('pause').textContent=running?'Pausar':'Retomar';if(running)refresh()};document.addEventListener('visibilitychange',refresh);setInterval(refresh,3000);refresh();
+const byId = id => document.getElementById(id);
+let running = true;
+
+byId('key').value = crypto.randomUUID();
+byId('newKey').onclick = () => { byId('key').value = crypto.randomUUID(); };
+
+function appendText(parent, tag, value) {
+  const element = document.createElement(tag);
+  element.textContent = String(value ?? '');
+  parent.appendChild(element);
+}
+
+function paymentCard(payment) {
+  const button = document.createElement('button');
+  button.type = 'button';
+  button.dataset.id = payment.id;
+  appendText(button, 'b', payment.status);
+  button.appendChild(document.createElement('br'));
+  button.appendChild(document.createTextNode(payment.id));
+  button.appendChild(document.createElement('br'));
+  button.appendChild(document.createTextNode(`R$ ${payment.money.amount}`));
+  button.appendChild(document.createElement('br'));
+  button.appendChild(document.createTextNode(payment.merchantReference));
+  button.onclick = async () => {
+    const response = await fetch(`/internal/lab/payments/${encodeURIComponent(button.dataset.id)}`);
+    const detail = await response.json();
+    byId('detailText').textContent = JSON.stringify(detail, null, 2);
+    byId('detail').showModal();
+  };
+  return button;
+}
+
+async function refresh() {
+  if (!running || document.hidden) return;
+  const response = await fetch('/internal/lab/payments?size=50');
+  const page = await response.json();
+  const cards = byId('cards');
+  cards.replaceChildren(...page.items.map(paymentCard));
+  byId('updated').textContent = `Atualizado ${new Date().toLocaleTimeString()}`;
+}
+
+byId('create').onsubmit = async event => {
+  event.preventDefault();
+  const startedAt = performance.now();
+  const response = await fetch('/api/v1/payments', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Idempotency-Key': byId('key').value
+    },
+    body: JSON.stringify({
+      accountId: byId('account').value,
+      amount: byId('amount').value,
+      currency: 'BRL',
+      merchantReference: byId('reference').value
+    })
+  });
+  const body = await response.json();
+  byId('result').textContent = `HTTP ${response.status} · ${Math.round(performance.now() - startedAt)} ms\n${JSON.stringify(body, null, 2)}`;
+  refresh();
+};
+
+byId('refresh').onclick = refresh;
+byId('pause').onclick = () => {
+  running = !running;
+  byId('pause').textContent = running ? 'Pausar' : 'Retomar';
+  if (running) refresh();
+};
+document.addEventListener('visibilitychange', refresh);
+setInterval(refresh, 3000);
+refresh();
