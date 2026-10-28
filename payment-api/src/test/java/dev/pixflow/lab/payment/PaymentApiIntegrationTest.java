@@ -1,0 +1,47 @@
+package dev.pixflow.lab.payment;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import dev.pixflow.lab.payment.application.*;
+import org.junit.jupiter.api.*;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.init.ScriptUtils;
+import org.springframework.test.context.DynamicPropertyRegistry;
+import org.springframework.test.context.DynamicPropertySource;
+import org.springframework.test.web.servlet.MockMvc;
+import org.testcontainers.containers.PostgreSQLContainer;
+import org.testcontainers.junit.jupiter.Container;
+import org.testcontainers.junit.jupiter.Testcontainers;
+
+import java.math.BigDecimal;
+import java.nio.file.*;
+import java.sql.DriverManager;
+import java.util.*;
+import java.util.concurrent.*;
+import static org.assertj.core.api.Assertions.*;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+
+@SpringBootTest
+@AutoConfigureMockMvc
+@Testcontainers(disabledWithoutDocker = true)
+class PaymentApiIntegrationTest {
+ @Container static PostgreSQLContainer<?> postgres=new PostgreSQLContainer<>("postgres:18.4-alpine").withDatabaseName("pixflow").withUsername("pixflow_app").withPassword("test-only");
+ @DynamicPropertySource static void properties(DynamicPropertyRegistry r){r.add("spring.datasource.url",postgres::getJdbcUrl);r.add("spring.datasource.username",postgres::getUsername);r.add("spring.datasource.password",postgres::getPassword);r.add("server.address",()->"127.0.0.1");}
+ @Autowired MockMvc mvc;@Autowired JdbcTemplate jdbc;@Autowired PaymentService service;@Autowired ObjectMapper json;
+ @BeforeAll static void schema() throws Exception {try(var connection=DriverManager.getConnection(postgres.getJdbcUrl(),postgres.getUsername(),postgres.getPassword())){for(String name:List.of("V001__create_payment_core.sql","V002__payment_api_pending_state.sql")){Path p=Path.of(System.getProperty("user.dir"),"infra","postgres","migrations",name);if(!Files.exists(p))p=Path.of(System.getProperty("user.dir"),"..","infra","postgres","migrations",name);ScriptUtils.executeSqlScript(connection,new FileSystemResource(p));}}}
+ @BeforeEach void clean(){jdbc.execute("truncate table payment_audit,outbox_events,idempotency_keys,payments restart identity cascade");}
+ private String body(String amount){return "{\"accountId\":\"acct-1\",\"amount\":"+amount+",\"currency\":\"BRL\",\"merchantReference\":\"ref-1\"}";}
+ @Test void createsAndReplaysWithoutDuplicates() throws Exception {var first=mvc.perform(post("/api/v1/payments").header("Idempotency-Key","key-1").contentType("application/json").content(body("10.00"))).andExpect(status().isCreated()).andReturn();var id=json.readTree(first.getResponse().getContentAsString()).get("paymentId").asText();var second=mvc.perform(post("/api/v1/payments").header("Idempotency-Key","key-1").contentType("application/json").content(body("10.00"))).andExpect(status().isOk()).andExpect(jsonPath("$.paymentId").value(id)).andExpect(jsonPath("$.idempotentReplay").value(true)).andReturn();assertThat(second.getResponse().getHeader("X-Correlation-ID")).isNotBlank();assertCounts(1,1,1,1);assertThat(jdbc.queryForObject("select status from payments",String.class)).isEqualTo("PENDING");}
+ @Test void rejectsDifferentPayloadAndMissingKey() throws Exception {mvc.perform(post("/api/v1/payments").header("Idempotency-Key","key-2").contentType("application/json").content(body("10.00"))).andExpect(status().isCreated());mvc.perform(post("/api/v1/payments").header("Idempotency-Key","key-2").contentType("application/json").content(body("11.00"))).andExpect(status().isConflict());mvc.perform(post("/api/v1/payments").contentType("application/json").content(body("10.00"))).andExpect(status().isBadRequest());assertCounts(1,1,1,1);}
+ @Test void validatesNotFoundAndPagination() throws Exception {mvc.perform(post("/api/v1/payments").header("Idempotency-Key","key-3").contentType("application/json").content(body("0"))).andExpect(status().isBadRequest());mvc.perform(get("/api/v1/payments/"+UUID.randomUUID())).andExpect(status().isNotFound());mvc.perform(get("/api/v1/payments?page=0&size=20")).andExpect(status().isOk()).andExpect(jsonPath("$.total").value(0));}
+ @Test void concurrentRequestsCreateOneLogicalPayment() throws Exception {var start=new CountDownLatch(1);try(var executor=Executors.newVirtualThreadPerTaskExecutor()){Callable<PaymentResult> call=()->{start.await();return service.create("same-key",new CreatePaymentCommand("acct-race",new BigDecimal("25.00"),"BRL","race-ref"),UUID.randomUUID().toString());};var a=executor.submit(call);var b=executor.submit(call);start.countDown();var results=List.of(a.get(10,TimeUnit.SECONDS),b.get(10,TimeUnit.SECONDS));assertThat(results).extracting(x->x.payment().id()).containsOnly(results.getFirst().payment().id());assertThat(results).extracting(PaymentResult::created).containsExactlyInAnyOrder(true,false);assertCounts(1,1,1,1);}}
+ @Test void rollsBackAllRowsWhenOutboxFails() {jdbc.execute("create function fail_outbox() returns trigger language plpgsql as $$ begin raise exception 'forced test failure'; end $$");jdbc.execute("create trigger fail_outbox before insert on outbox_events for each statement execute function fail_outbox()");try{assertThatThrownBy(()->service.create("rollback-key",new CreatePaymentCommand("acct-rb",new BigDecimal("9.00"),"BRL","rb-ref"),"corr-rb")).isInstanceOf(RuntimeException.class);assertCounts(0,0,0,0);}finally{jdbc.execute("drop trigger fail_outbox on outbox_events");jdbc.execute("drop function fail_outbox() ");}}
+ @Test void labHistoryComesFromPersistedRows() throws Exception {var response=mvc.perform(post("/api/v1/payments").header("Idempotency-Key","key-lab").contentType("application/json").content(body("15.00"))).andReturn();JsonNode created=json.readTree(response.getResponse().getContentAsString());mvc.perform(get("/internal/lab/payments/"+created.get("paymentId").asText())).andExpect(status().isOk()).andExpect(jsonPath("$.payment.status").value("PENDING")).andExpect(jsonPath("$.outbox[0].topic").value("payment.requested.v1")).andExpect(jsonPath("$.outbox[0].publishedAt").doesNotExist()).andExpect(jsonPath("$.audit[0].newStatus").value("PENDING"));}
+ @Test void servesPixFlowLiveWithoutClaimingFutureCapabilities() throws Exception {mvc.perform(get("/lab/")).andExpect(status().isOk()).andExpect(forwardedUrl("/lab/index.html"));mvc.perform(get("/lab/index.html")).andExpect(status().isOk()).andExpect(content().string(org.hamcrest.Matchers.containsString("PixFlow Live")));mvc.perform(get("/internal/lab/capabilities")).andExpect(status().isOk()).andExpect(jsonPath("$.kafkaPublish").value("NOT_IMPLEMENTED")).andExpect(jsonPath("$.worker").value("NOT_IMPLEMENTED")).andExpect(jsonPath("$.psp").value("NOT_IMPLEMENTED"));}
+ void assertCounts(int p,int i,int o,int a){assertThat(jdbc.queryForObject("select count(*) from payments",Integer.class)).isEqualTo(p);assertThat(jdbc.queryForObject("select count(*) from idempotency_keys",Integer.class)).isEqualTo(i);assertThat(jdbc.queryForObject("select count(*) from outbox_events",Integer.class)).isEqualTo(o);assertThat(jdbc.queryForObject("select count(*) from payment_audit",Integer.class)).isEqualTo(a);}
+}

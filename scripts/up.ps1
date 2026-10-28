@@ -3,4 +3,5 @@ Assert-PixFlowRepository
 Invoke-PixFlowCompose up -d --wait postgres kafka
 Invoke-PixFlowCompose run --rm flyway
 Invoke-PixFlowCompose run --rm kafka-init
+Invoke-PixFlowCompose up -d --wait payment-api
 Invoke-PixFlowCompose ps
