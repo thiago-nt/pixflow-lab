@@ -139,6 +139,37 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  outbox-relay:
+    build:
+      context: .
+      dockerfile: outbox-relay/Dockerfile
+    environment:
+      PIXFLOW_DB_URL: jdbc:postgresql://postgres:5432/${PIXFLOW_DB_NAME:-pixflow}
+      PIXFLOW_DB_USER: ${PIXFLOW_DB_USER:-pixflow_app}
+      PIXFLOW_DB_PASSWORD: ${PIXFLOW_DB_PASSWORD:-pixflow_lab_dev_only}
+      PIXFLOW_KAFKA_BOOTSTRAP: kafka:9092
+      PIXFLOW_RELAY_OWNER: ${PIXFLOW_RELAY_OWNER:-outbox-relay-1}
+      PIXFLOW_RELAY_BATCH_SIZE: ${PIXFLOW_RELAY_BATCH_SIZE:-1}
+      PIXFLOW_RELAY_CLAIM_TTL: ${PIXFLOW_RELAY_CLAIM_TTL:-30s}
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/actuator/health/readiness | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.75
+    security_opt:
+      - no-new-privileges:true
+
   inspector-db-init:
     image: postgres:18.4-alpine
     profiles: ["inspect"]

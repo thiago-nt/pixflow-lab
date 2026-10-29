@@ -24,7 +24,9 @@ function paymentCard(payment) {
   button.onclick = async () => {
     const response = await fetch(`/internal/lab/payments/${encodeURIComponent(button.dataset.id)}`);
     const detail = await response.json();
-    byId('detailText').textContent = JSON.stringify(detail, null, 2);
+    const outbox = detail.outbox?.[0];
+    const publication = outbox?.publishedAt ? 'KAFKA_PUBLISHED' : 'OUTBOX_PENDING';
+    byId('detailText').textContent = `Publicação: ${publication}\nEventId: ${outbox?.eventId ?? 'indisponível'}\n\n${JSON.stringify(detail, null, 2)}`;
     byId('detail').showModal();
   };
   return button;

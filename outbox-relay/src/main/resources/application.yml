@@ -1,0 +1,47 @@
+spring:
+  application:
+    name: outbox-relay
+  datasource:
+    url: ${PIXFLOW_DB_URL:jdbc:postgresql://127.0.0.1:55432/pixflow}
+    username: ${PIXFLOW_DB_USER:pixflow_app}
+    password: ${PIXFLOW_DB_PASSWORD:pixflow_lab_dev_only}
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 1
+  kafka:
+    bootstrap-servers: ${PIXFLOW_KAFKA_BOOTSTRAP:127.0.0.1:19092}
+    producer:
+      acks: all
+      retries: 5
+      properties:
+        enable.idempotence: true
+        max.in.flight.requests.per.connection: 5
+        max.block.ms: 5000
+        delivery.timeout.ms: 15000
+        request.timeout.ms: 5000
+    properties:
+      client.id: ${PIXFLOW_RELAY_OWNER:outbox-relay-local}
+
+pixflow:
+  relay:
+    owner: ${PIXFLOW_RELAY_OWNER:outbox-relay-local}
+    batch-size: ${PIXFLOW_RELAY_BATCH_SIZE:1}
+    claim-ttl: ${PIXFLOW_RELAY_CLAIM_TTL:30s}
+    send-timeout: ${PIXFLOW_RELAY_SEND_TIMEOUT:10s}
+    failure-backoff: ${PIXFLOW_RELAY_FAILURE_BACKOFF:2s}
+    poll-delay: ${PIXFLOW_RELAY_POLL_DELAY:500ms}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+  health:
+    readinessstate:
+      enabled: true
+    livenessstate:
+      enabled: true

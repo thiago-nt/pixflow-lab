@@ -2,7 +2,6 @@ package dev.pixflow.lab.payment.application;
 
 import java.time.Clock;
 import java.time.Instant;
-import java.util.Map;
 import java.util.UUID;
 
 import org.slf4j.Logger;
@@ -15,6 +14,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
+import dev.pixflow.lab.contracts.PaymentRequestedEvent;
 import dev.pixflow.lab.payment.domain.IdempotencyConflictException;
 import dev.pixflow.lab.payment.domain.InvalidPaymentException;
 import dev.pixflow.lab.payment.domain.Money;
@@ -101,7 +101,8 @@ public class PaymentService {
 
     private String eventPayload(UUID eventId, Payment payment, String correlationId, Instant occurredAt) {
         try {
-            return json.writeValueAsString(Map.of("eventId", eventId, "paymentId", payment.id(), "eventType", "payment.requested", "schemaVersion", 1, "occurredAt", occurredAt, "correlationId", correlationId, "amountMinor", payment.money().minorUnits(), "currency", "BRL"));
+            return json.writeValueAsString(new PaymentRequestedEvent(eventId, payment.id(), "payment.requested", 1,
+                    occurredAt, correlationId, payment.money().minorUnits(), payment.money().currency()));
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("could not serialize outbox event", exception);
         }

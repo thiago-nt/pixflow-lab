@@ -8,6 +8,7 @@ COPY payment-worker/pom.xml payment-worker/pom.xml
 COPY psp-simulator/pom.xml psp-simulator/pom.xml
 COPY reconciliation-worker/pom.xml reconciliation-worker/pom.xml
 COPY payment-api/src payment-api/src
+COPY shared-contracts/src shared-contracts/src
 RUN mvn -B -ntp -pl payment-api -am package -DskipTests
 
 FROM eclipse-temurin:21.0.9_10-jre-alpine
