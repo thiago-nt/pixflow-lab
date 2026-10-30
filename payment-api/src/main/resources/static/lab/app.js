@@ -54,7 +54,8 @@ byId('create').onsubmit = async event => {
       accountId: byId('account').value,
       amount: byId('amount').value,
       currency: 'BRL',
-      merchantReference: byId('reference').value
+      merchantReference: byId('reference').value,
+      simulationScenario: byId('scenario').value
     })
   });
   const body = await response.json();

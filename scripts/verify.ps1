@@ -18,11 +18,13 @@ function Gate([string]$Name, [scriptblock]$Check) {
 
 Gate 'Compose config válido' { docker compose -p $script:ComposeProject config --quiet }
 Gate 'PostgreSQL healthy' { docker compose -p $script:ComposeProject exec -T postgres pg_isready -U $databaseUser -d $databaseName }
-Gate 'Flyway aplicado' { docker compose -p $script:ComposeProject exec -T postgres psql -U $databaseUser -d $databaseName -v ON_ERROR_STOP=1 -Atc "SELECT CASE WHEN COUNT(*) = 3 AND MAX(version) = '003' THEN 'V003_OK' ELSE 'INVALID' END FROM flyway_schema_history WHERE success" | Select-String 'V003_OK' | Out-Null }
+Gate 'Flyway aplicado' { docker compose -p $script:ComposeProject exec -T postgres psql -U $databaseUser -d $databaseName -v ON_ERROR_STOP=1 -Atc "SELECT CASE WHEN COUNT(*) = 4 AND MAX(version) = '004' THEN 'V004_OK' ELSE 'INVALID' END FROM flyway_schema_history WHERE success" | Select-String 'V004_OK' | Out-Null }
 Gate 'Tabelas obrigatórias' { docker compose -p $script:ComposeProject exec -T postgres psql -U $databaseUser -d $databaseName -v ON_ERROR_STOP=1 -Atc "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name IN ('payments','idempotency_keys','outbox_events','inbox_processed','payment_audit')" | Select-String '^5$' | Out-Null }
 Gate 'Kafka healthy' { docker compose -p $script:ComposeProject exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list | Out-Null }
 Gate 'Payment API healthy' { $response = Invoke-RestMethod -Uri 'http://127.0.0.1:8080/actuator/health/readiness' -TimeoutSec 10; if ($response.status -ne 'UP') { throw "status $($response.status)" } }
 Gate 'Outbox Relay healthy' { docker compose -p $script:ComposeProject exec -T outbox-relay wget -qO- http://127.0.0.1:8080/actuator/health/readiness | Select-String 'UP' | Out-Null }
+Gate 'PSP Simulator healthy' { docker compose -p $script:ComposeProject exec -T psp-simulator wget -qO- http://127.0.0.1:8080/actuator/health/readiness | Select-String 'UP' | Out-Null }
+Gate 'Payment Worker healthy' { docker compose -p $script:ComposeProject exec -T payment-worker wget -qO- http://127.0.0.1:8080/actuator/health/readiness | Select-String 'UP' | Out-Null }
 Gate 'PixFlow Live acessivel' { $response = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8080/lab/' -TimeoutSec 10; if ($response.StatusCode -ne 200 -or $response.Content -notmatch 'PixFlow Live') { throw 'painel indisponivel' } }
 Gate 'Tópicos explícitos' { $topics = docker compose -p $script:ComposeProject exec -T kafka /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list; foreach ($required in 'payment.requested.v1','payment.result.v1','payment.dlt.v1') { if ($required -notin $topics) { throw "tópico ausente: $required" } } }
 

@@ -1,0 +1,41 @@
+server:
+  address: 0.0.0.0
+  port: 8080
+spring:
+  application.name: payment-worker
+  datasource:
+    url: ${PIXFLOW_DB_URL:jdbc:postgresql://127.0.0.1:55432/pixflow}
+    username: ${PIXFLOW_DB_USER:pixflow_app}
+    password: ${PIXFLOW_DB_PASSWORD:pixflow_lab_dev_only}
+    hikari:
+      maximum-pool-size: 5
+      minimum-idle: 1
+  kafka:
+    bootstrap-servers: ${PIXFLOW_KAFKA_BOOTSTRAP:127.0.0.1:19092}
+    consumer:
+      group-id: ${PIXFLOW_WORKER_GROUP:pixflow-payment-worker-v1}
+      enable-auto-commit: false
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+    listener:
+      ack-mode: manual_immediate
+    producer:
+      acks: all
+      properties:
+        enable.idempotence: true
+management:
+  endpoints.web.exposure.include: health,info,metrics
+  endpoint.health.probes.enabled: true
+logging:
+  level:
+    org.apache.kafka.clients.consumer.ConsumerConfig: WARN
+    org.apache.kafka.clients.producer.ProducerConfig: WARN
+pixflow:
+  worker:
+    group-id: ${PIXFLOW_WORKER_GROUP:pixflow-payment-worker-v1}
+    topic: payment.requested.v1
+    result-topic: payment.result.v1
+    dlt-topic: payment.dlt.v1
+  psp:
+    base-url: ${PIXFLOW_PSP_URL:http://127.0.0.1:18083}

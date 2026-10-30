@@ -58,7 +58,8 @@ public class PaymentService {
                 var payment = new Payment(paymentId, command.accountId(), new Money(command.amount(), command.currency()), command.merchantReference(), PaymentStatus.PENDING, now, now);
                 store.insertPayment(payment, requestHash);
                 store.insertIdempotency(command.accountId(), keyDigest, requestHash, paymentId);
-                store.insertOutbox(eventId, payment, correlationId, eventPayload(eventId, payment, correlationId, now));
+                store.insertOutbox(eventId, payment, correlationId,
+                        eventPayload(eventId, payment, correlationId, now, command.simulationScenario()));
                 store.insertAudit(paymentId, eventId, correlationId);
                 log.info("operation=payment_create paymentId={} result=created correlationId={}", paymentId, correlationId);
                 return new PaymentResult(payment, true, correlationId);
@@ -99,10 +100,12 @@ public class PaymentService {
         return result;
     }
 
-    private String eventPayload(UUID eventId, Payment payment, String correlationId, Instant occurredAt) {
+    private String eventPayload(UUID eventId, Payment payment, String correlationId, Instant occurredAt,
+            dev.pixflow.lab.contracts.SimulationScenario simulationScenario) {
         try {
             return json.writeValueAsString(new PaymentRequestedEvent(eventId, payment.id(), "payment.requested", 1,
-                    occurredAt, correlationId, payment.money().minorUnits(), payment.money().currency()));
+                    occurredAt, correlationId, payment.money().minorUnits(), payment.money().currency(),
+                    simulationScenario));
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("could not serialize outbox event", exception);
         }

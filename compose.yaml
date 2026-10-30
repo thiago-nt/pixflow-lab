@@ -127,6 +127,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      flyway:
+        condition: service_completed_successfully
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/actuator/health/readiness | grep -q UP"]
       interval: 10s
@@ -157,6 +159,71 @@ services:
       postgres:
         condition: service_healthy
       kafka:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/actuator/health/readiness | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.75
+    security_opt:
+      - no-new-privileges:true
+
+  psp-simulator:
+    build:
+      context: .
+      dockerfile: psp-simulator/Dockerfile
+    environment:
+      PIXFLOW_PSP_BIND: 0.0.0.0
+      PIXFLOW_PSP_PORT: 8080
+      PIXFLOW_DB_URL: jdbc:postgresql://postgres:5432/${PIXFLOW_DB_NAME:-pixflow}
+      PIXFLOW_DB_USER: ${PIXFLOW_DB_USER:-pixflow_app}
+      PIXFLOW_DB_PASSWORD: ${PIXFLOW_DB_PASSWORD:-pixflow_lab_dev_only}
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      flyway:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/actuator/health/readiness | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
+    security_opt:
+      - no-new-privileges:true
+
+  payment-worker:
+    build:
+      context: .
+      dockerfile: payment-worker/Dockerfile
+    environment:
+      PIXFLOW_DB_URL: jdbc:postgresql://postgres:5432/${PIXFLOW_DB_NAME:-pixflow}
+      PIXFLOW_DB_USER: ${PIXFLOW_DB_USER:-pixflow_app}
+      PIXFLOW_DB_PASSWORD: ${PIXFLOW_DB_PASSWORD:-pixflow_lab_dev_only}
+      PIXFLOW_KAFKA_BOOTSTRAP: kafka:9092
+      PIXFLOW_WORKER_GROUP: pixflow-payment-worker-v1
+      PIXFLOW_PSP_URL: http://psp-simulator:8080
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      kafka:
+        condition: service_healthy
+      kafka-init:
+        condition: service_completed_successfully
+      flyway:
+        condition: service_completed_successfully
+      psp-simulator:
         condition: service_healthy
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/actuator/health/readiness | grep -q UP"]
