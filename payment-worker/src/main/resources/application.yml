@@ -34,6 +34,10 @@ logging:
 pixflow:
   worker:
     group-id: ${PIXFLOW_WORKER_GROUP:pixflow-payment-worker-v1}
+    owner-prefix: ${PIXFLOW_WORKER_OWNER_PREFIX:payment-worker}
+    lease-ttl-ms: ${PIXFLOW_WORKER_LEASE_TTL_MS:30000}
+    deferred-poll-ms: ${PIXFLOW_WORKER_DEFERRED_POLL_MS:1000}
+    deferred-claim-ms: ${PIXFLOW_WORKER_DEFERRED_CLAIM_MS:20000}
     topic: payment.requested.v1
     result-topic: payment.result.v1
     dlt-topic: payment.dlt.v1

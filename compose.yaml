@@ -211,6 +211,10 @@ services:
       PIXFLOW_DB_PASSWORD: ${PIXFLOW_DB_PASSWORD:-pixflow_lab_dev_only}
       PIXFLOW_KAFKA_BOOTSTRAP: kafka:9092
       PIXFLOW_WORKER_GROUP: pixflow-payment-worker-v1
+      PIXFLOW_WORKER_OWNER_PREFIX: payment-worker
+      PIXFLOW_WORKER_LEASE_TTL_MS: 30000
+      PIXFLOW_WORKER_DEFERRED_POLL_MS: 1000
+      PIXFLOW_WORKER_DEFERRED_CLAIM_MS: 20000
       PIXFLOW_PSP_URL: http://psp-simulator:8080
     networks:
       - backend

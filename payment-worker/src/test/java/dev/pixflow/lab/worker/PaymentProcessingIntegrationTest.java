@@ -15,6 +15,8 @@ import java.nio.file.Path;
 import java.sql.DriverManager;
 import java.time.Instant;
 import java.util.List;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import java.util.UUID;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
@@ -38,7 +40,7 @@ import org.testcontainers.junit.jupiter.Testcontainers;
 import org.springframework.transaction.support.TransactionTemplate;
 
 @JdbcTest
-@Import({PaymentProcessingService.class, PaymentProcessingIntegrationTest.Config.class})
+@Import({PaymentProcessingService.class, LeaseService.class, WorkerIdentity.class, PaymentProcessingIntegrationTest.Config.class})
 @Testcontainers(disabledWithoutDocker = true)
 @Transactional(propagation = Propagation.NOT_SUPPORTED)
 class PaymentProcessingIntegrationTest {
@@ -51,7 +53,7 @@ class PaymentProcessingIntegrationTest {
     }
     @BeforeAll static void schema() throws Exception {
         try (var connection=DriverManager.getConnection(postgres.getJdbcUrl(),postgres.getUsername(),postgres.getPassword())) {
-            for (var migration: List.of("V001__create_payment_core.sql","V002__payment_api_pending_state.sql","V003__outbox_claim_ownership.sql","V004__worker_and_psp_simulator.sql")) {
+            for (var migration: List.of("V001__create_payment_core.sql","V002__payment_api_pending_state.sql","V003__outbox_claim_ownership.sql","V004__worker_and_psp_simulator.sql","V005__payment_worker_lease_fencing.sql")) {
                 var path=Path.of(System.getProperty("user.dir"),"infra","postgres","migrations",migration);
                 if (!Files.exists(path)) path=Path.of(System.getProperty("user.dir"),"..","infra","postgres","migrations",migration);
                 ScriptUtils.executeSqlScript(connection,new FileSystemResource(path));
@@ -60,6 +62,8 @@ class PaymentProcessingIntegrationTest {
     }
     @Autowired JdbcTemplate jdbc;
     @Autowired PaymentProcessingService processing;
+    @Autowired LeaseService leases;
+    @Autowired TransactionTemplate transactionTemplate;
     @MockitoBean PspClient psp;
     @MockitoBean AfterPspCallHook afterPspCallHook;
     private UUID paymentId;
@@ -68,7 +72,7 @@ class PaymentProcessingIntegrationTest {
     @BeforeEach void setUp() {
         jdbc.execute("DROP TRIGGER IF EXISTS fail_payment_success_test ON payments");
         jdbc.execute("DROP FUNCTION IF EXISTS fail_payment_success_test()");
-        jdbc.execute("TRUNCATE payment_audit,outbox_events,inbox_processed,idempotency_keys,payments RESTART IDENTITY CASCADE");
+        jdbc.execute("TRUNCATE payment_lease_audit,worker_deferred_events,payment_audit,outbox_events,inbox_processed,idempotency_keys,payments RESTART IDENTITY CASCADE");
         paymentId=UUID.randomUUID();
         jdbc.update("INSERT INTO payments(payment_id,tenant_id,request_hash,amount_minor,currency,status,external_reference,merchant_reference) VALUES (?, 'acct-test','hash',1234,'BRL','PENDING',?, 'synthetic')",paymentId,"pxf-"+paymentId);
         event=new PaymentRequestedEvent(UUID.randomUUID(),paymentId,"payment.requested",1,Instant.now(),"corr-test",1234,"BRL",SimulationScenario.APPROVED);
@@ -124,6 +128,50 @@ class PaymentProcessingIntegrationTest {
         org.mockito.Mockito.verify(psp,org.mockito.Mockito.times(1)).charge(org.mockito.ArgumentMatchers.any(PspChargeRequest.class));
     }
 
+    @Test void staleWorkerCannotOverwriteResultAfterLeaseExpiresDuringPspCall() throws Exception {
+        var result=view(PspOutcome.APPROVED);
+        var atExternalCall=new java.util.concurrent.CountDownLatch(1);
+        var resumeOldWorker=new java.util.concurrent.CountDownLatch(1);
+        when(psp.find("pxf-"+paymentId)).thenReturn(java.util.Optional.empty(),java.util.Optional.of(result));
+        when(psp.charge(org.mockito.ArgumentMatchers.any(PspChargeRequest.class))).thenAnswer(invocation -> {
+            org.assertj.core.api.Assertions.assertThat(org.springframework.transaction.support.TransactionSynchronizationManager.isActualTransactionActive()).isFalse();
+            return result;
+        });
+        org.mockito.Mockito.doAnswer(invocation -> {
+            atExternalCall.countDown();
+            if (!resumeOldWorker.await(10,TimeUnit.SECONDS)) throw new IllegalStateException("test barrier timed out");
+            return null;
+        }).when(afterPspCallHook).afterCall();
+        try(var executor=Executors.newVirtualThreadPerTaskExecutor()) {
+            var oldWorker=executor.submit(()->processing.process(event));
+            assertThat(atExternalCall.await(10,TimeUnit.SECONDS)).isTrue();
+            var oldToken=jdbc.queryForObject("SELECT fencing_token FROM payments WHERE payment_id=?",Long.class,paymentId);
+            jdbc.update("UPDATE payments SET lease_until=clock_timestamp()-interval '1 second' WHERE payment_id=?",paymentId);
+            var workerB=new PaymentProcessingService(jdbc,transactionTemplate,psp,new ObjectMapper().findAndRegisterModules(),()->{},leases,
+                    new WorkerIdentity("worker-B"),"pixflow-payment-worker-v1","payment.result.v1");
+            workerB.process(event);
+            var newToken=jdbc.queryForObject("SELECT fencing_token FROM payments WHERE payment_id=?",Long.class,paymentId);
+            assertThat(newToken).isGreaterThan(oldToken);
+            System.out.printf("GATE05_STALE_WORKER paymentId=%s workerA=%d workerB=%d%n",paymentId,oldToken,newToken);
+            resumeOldWorker.countDown();
+            oldWorker.get(10,TimeUnit.SECONDS);
+            assertThat(jdbc.queryForObject("SELECT status FROM payments WHERE payment_id=?",String.class,paymentId)).isEqualTo("SUCCEEDED");
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM payment_lease_audit WHERE payment_id=? AND event_type='WRITE_REJECTED' AND fencing_token=?",Integer.class,paymentId,oldToken)).isGreaterThanOrEqualTo(1);
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM psp_simulator.transactions WHERE payment_id=?",Integer.class,paymentId)).isZero();
+            assertThat(jdbc.queryForObject("SELECT count(*) FROM inbox_processed WHERE consumer_name='pixflow-payment-worker-v1' AND event_id=?",Integer.class,event.eventId())).isEqualTo(1);
+            org.mockito.Mockito.verify(psp,org.mockito.Mockito.times(1)).charge(org.mockito.ArgumentMatchers.any(PspChargeRequest.class));
+        } finally { resumeOldWorker.countDown(); }
+    }
+
+    @Test void pspTimeoutRemainsUnknownAndDoesNotRetrySameInboxEvent() {
+        when(psp.find("pxf-"+paymentId)).thenReturn(java.util.Optional.empty());
+        when(psp.charge(org.mockito.ArgumentMatchers.any(PspChargeRequest.class))).thenThrow(new PspOutcomeUnknownException("synthetic lost response"));
+        processing.process(event);
+        processing.process(event);
+        assertThat(jdbc.queryForObject("SELECT status FROM payments WHERE payment_id=?",String.class,paymentId)).isEqualTo("UNKNOWN");
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM inbox_processed WHERE event_id=?",Integer.class,event.eventId())).isEqualTo(1);
+        org.mockito.Mockito.verify(psp,org.mockito.Mockito.times(1)).charge(org.mockito.ArgumentMatchers.any(PspChargeRequest.class));
+    }
     private PspTransactionView view(PspOutcome outcome) {
         return new PspTransactionView(UUID.randomUUID(),paymentId,"pxf-"+paymentId,1234,"BRL",SimulationScenario.APPROVED,outcome,false,Instant.now());
     }

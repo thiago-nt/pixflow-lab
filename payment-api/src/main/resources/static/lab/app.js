@@ -26,7 +26,13 @@ function paymentCard(payment) {
     const detail = await response.json();
     const outbox = detail.outbox?.[0];
     const publication = outbox?.publishedAt ? 'KAFKA_PUBLISHED' : 'OUTBOX_PENDING';
-    byId('detailText').textContent = `Publicação: ${publication}\nEventId: ${outbox?.eventId ?? 'indisponível'}\n\n${JSON.stringify(detail, null, 2)}`;
+    const lease = detail.lease;
+    const leaseHistory = (detail.leaseHistory || []).map(item =>
+      `${item.occurredAt} ${item.eventType} owner=${item.ownerId} token=${item.fencingToken}${item.detail ? ` | ${item.detail}` : ''}`
+    ).join('\n') || 'No persisted lease events.';
+    const leaseSummary = `Current lease: owner=${lease?.ownerId ?? 'none'}; token=${lease?.fencingToken ?? 'unavailable'}; expires=${lease?.leaseUntil ?? 'no active lease'}`;
+    const pspReference = detail.psp?.externalReference ?? 'not yet recorded by simulator';
+    byId('detailText').textContent = `Publication: ${publication}\nEventId: ${outbox?.eventId ?? 'unavailable'}\n${leaseSummary}\nPSP reference: ${pspReference}\n\nLease history:\n${leaseHistory}\n\n${JSON.stringify(detail, null, 2)}`;
     byId('detail').showModal();
   };
   return button;
