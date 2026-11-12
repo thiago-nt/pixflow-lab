@@ -14,9 +14,15 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import java.time.Duration;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @Service
 public class PaymentProcessingService {
+    private static final Logger log = LoggerFactory.getLogger(PaymentProcessingService.class);
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     private final PspClient psp;
@@ -26,13 +32,16 @@ public class PaymentProcessingService {
     private final WorkerIdentity identity;
     private final String groupId;
     private final String resultTopic;
+    private final MeterRegistry meters;
 
     public PaymentProcessingService(JdbcTemplate jdbc, TransactionTemplate tx, PspClient psp, ObjectMapper json,
             AfterPspCallHook afterPspCall, LeaseService leases, WorkerIdentity identity,
             @Value("${pixflow.worker.group-id}") String groupId,
-            @Value("${pixflow.worker.result-topic}") String resultTopic) {
+            @Value("${pixflow.worker.result-topic}") String resultTopic,
+            MeterRegistry meters) {
         this.jdbc=jdbc; this.tx=tx; this.psp=psp; this.json=json; this.afterPspCall=afterPspCall;
         this.leases=leases; this.identity=identity; this.groupId=groupId; this.resultTopic=resultTopic;
+        this.meters=meters;
     }
 
     public void process(PaymentRequestedEvent event) {
@@ -131,6 +140,12 @@ public class PaymentProcessingService {
             jdbc.update("INSERT INTO inbox_processed(consumer_name,event_id) VALUES (?,?) ON CONFLICT DO NOTHING",groupId,event.eventId());
             return true;
         });
+        if (Boolean.TRUE.equals(completed)) {
+            meters.counter("pixflow.payment.results", "outcome", finalStatus.toLowerCase()).increment();
+            recordResolution(lease.paymentId(), finalStatus.toLowerCase());
+            log.atInfo().addKeyValue("operation", "payment_process").addKeyValue("outcome", finalStatus.toLowerCase())
+                    .log("payment result persisted");
+        }
         if (!Boolean.TRUE.equals(completed) && jdbc.queryForObject("SELECT count(*) FROM inbox_processed WHERE consumer_name=? AND event_id=?",Integer.class,groupId,event.eventId())==0) deferCurrent(lease,event,payload,"lease lost before persisting PSP result");
     }
 
@@ -155,6 +170,12 @@ public class PaymentProcessingService {
     private String serialize(PaymentRequestedEvent event) {
         try { return json.writeValueAsString(event); }
         catch (JsonProcessingException e) { throw new IllegalStateException("could not serialize deferred event",e); }
+    }
+
+    private void recordResolution(UUID paymentId, String outcome) {
+        var millis = jdbc.queryForObject("SELECT GREATEST(0,EXTRACT(EPOCH FROM (clock_timestamp()-created_at))*1000)::bigint FROM payments WHERE payment_id=?", Long.class, paymentId);
+        if (millis != null) Timer.builder("pixflow.payment.resolution").tag("outcome", outcome)
+                .register(meters).record(Duration.ofMillis(millis));
     }
     private record PaymentRow(UUID paymentId,String externalReference,long amountMinor,String currency,String status) {}
 }

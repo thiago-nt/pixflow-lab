@@ -11,11 +11,18 @@ import java.util.UUID;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.beans.factory.ObjectProvider;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
 
 @Service
 public class PspSimulatorService {
     private final JdbcTemplate jdbc;
-    public PspSimulatorService(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+    private final MeterRegistry meters;
+    public PspSimulatorService(JdbcTemplate jdbc, ObjectProvider<MeterRegistry> meterProvider) {
+        this.jdbc = jdbc;
+        this.meters = meterProvider.getIfAvailable(SimpleMeterRegistry::new);
+    }
 
     @Transactional
     public ChargeResult charge(PspChargeRequest request) {
@@ -36,17 +43,23 @@ public class PspSimulatorService {
                 || !transaction.currency().equals(request.currency())) {
             throw new PspReferenceConflictException("external reference already belongs to a different synthetic charge");
         }
+        meters.counter("pixflow.psp.operations", "operation", "charge",
+                "outcome", transaction.outcome().name().toLowerCase(),
+                "effect", inserted == 1 ? "created" : "replay").increment();
         return new ChargeResult(transaction, inserted == 1, inserted == 1 && lost);
     }
 
     @Transactional(readOnly = true)
     public Optional<PspTransactionView> findByReference(String reference) {
-        return jdbc.query("""
+        var result = jdbc.query("""
                 SELECT transaction_id,payment_id,external_reference,amount_minor,currency,simulation_scenario,outcome,response_lost,created_at
                 FROM psp_simulator.transactions WHERE external_reference=?
                 """, (rs, row) -> new PspTransactionView(rs.getObject(1, UUID.class), rs.getObject(2, UUID.class),
                 rs.getString(3), rs.getLong(4), rs.getString(5).trim(), SimulationScenario.valueOf(rs.getString(6)),
                 PspOutcome.valueOf(rs.getString(7)), rs.getBoolean(8), rs.getTimestamp(9).toInstant()), reference).stream().findFirst();
+        meters.counter("pixflow.psp.operations", "operation", "lookup", "outcome",
+                result.map(item -> item.outcome().name().toLowerCase()).orElse("not_found"), "effect", "none").increment();
+        return result;
     }
 
     public record ChargeResult(PspTransactionView transaction, boolean created, boolean responseLost) {}

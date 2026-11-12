@@ -1,0 +1,12 @@
+{
+  "uid": "pixflow-worker", "title": "PixFlow Lab - Payment Worker, lease e fencing", "tags": ["pixflow", "gate07"], "timezone": "browser", "schemaVersion": 41, "version": 1, "refresh": "5s",
+  "time": {"from": "now-30m", "to": "now"},
+  "panels": [
+    {"id": 1, "type": "timeseries", "title": "Tentativas de processamento", "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"refId": "A", "expr": "sum by (outcome) (rate(pixflow_payment_processing_attempts_total[5m]))", "legendFormat": "{{outcome}}"}]},
+    {"id": 2, "type": "timeseries", "title": "Aquisicao de lease", "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"refId": "A", "expr": "sum by (outcome) (rate(pixflow_lease_acquisitions_total[5m]))", "legendFormat": "{{outcome}}"}]},
+    {"id": 3, "type": "timeseries", "title": "Expiracoes e fencing rejeitado", "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"refId": "A", "expr": "rate(pixflow_lease_expirations_total[5m])", "legendFormat": "lease expirado"}, {"refId": "B", "expr": "rate(pixflow_fencing_rejections_total{job=\"payment-worker\"}[5m])", "legendFormat": "fencing rejeitado"}]},
+    {"id": 4, "type": "timeseries", "title": "Duracao de processamento P95/P99", "gridPos": {"h": 9, "w": 12, "x": 0, "y": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(pixflow_payment_processing_duration_seconds_bucket[5m])))", "legendFormat": "P95"}, {"refId": "B", "expr": "histogram_quantile(0.99, sum by (le) (rate(pixflow_payment_processing_duration_seconds_bucket[5m])))", "legendFormat": "P99"}]},
+    {"id": 5, "type": "timeseries", "title": "Resultado financeiro", "gridPos": {"h": 9, "w": 12, "x": 12, "y": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"refId": "A", "expr": "sum by (outcome) (rate(pixflow_payment_results_total[5m]))", "legendFormat": "{{outcome}}"}]}
+  ]
+}
+

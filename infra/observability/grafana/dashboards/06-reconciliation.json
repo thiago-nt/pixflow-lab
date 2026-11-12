@@ -1,0 +1,12 @@
+{
+  "uid": "pixflow-reconciliation", "title": "PixFlow Lab - Reconciliacao e UNKNOWN", "tags": ["pixflow", "gate07"], "timezone": "browser", "schemaVersion": 41, "version": 1, "refresh": "5s",
+  "time": {"from": "now-30m", "to": "now"},
+  "panels": [
+    {"id": 1, "type": "stat", "title": "Pagamentos UNKNOWN", "gridPos": {"h": 8, "w": 6, "x": 0, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"refId": "A", "expr": "max(pixflow_payments_unknown)", "legendFormat": "unknown"}]},
+    {"id": 2, "type": "timeseries", "title": "Tentativas de reconciliacao", "gridPos": {"h": 8, "w": 9, "x": 6, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"refId": "A", "expr": "sum by (outcome) (rate(pixflow_reconciliation_attempts_total[5m]))", "legendFormat": "{{outcome}}"}]},
+    {"id": 3, "type": "timeseries", "title": "Resultados da reconciliacao", "gridPos": {"h": 8, "w": 9, "x": 15, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"refId": "A", "expr": "sum by (outcome) (rate(pixflow_reconciliation_results_total[5m]))", "legendFormat": "{{outcome}}"}]},
+    {"id": 4, "type": "timeseries", "title": "Duracao da consulta P95/P99", "gridPos": {"h": 9, "w": 12, "x": 0, "y": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"refId": "A", "expr": "histogram_quantile(0.95, sum by (le) (rate(pixflow_reconciliation_duration_seconds_bucket[5m])))", "legendFormat": "P95"}, {"refId": "B", "expr": "histogram_quantile(0.99, sum by (le) (rate(pixflow_reconciliation_duration_seconds_bucket[5m])))", "legendFormat": "P99"}]},
+    {"id": 5, "type": "timeseries", "title": "Tempo ate resolucao P50/P95/P99", "gridPos": {"h": 9, "w": 12, "x": 12, "y": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"refId": "A", "expr": "histogram_quantile(0.50, sum by (le) (rate(pixflow_payment_resolution_seconds_bucket[5m])))", "legendFormat": "P50"}, {"refId": "B", "expr": "histogram_quantile(0.95, sum by (le) (rate(pixflow_payment_resolution_seconds_bucket[5m])))", "legendFormat": "P95"}, {"refId": "C", "expr": "histogram_quantile(0.99, sum by (le) (rate(pixflow_payment_resolution_seconds_bucket[5m])))", "legendFormat": "P99"}]}
+  ]
+}
+

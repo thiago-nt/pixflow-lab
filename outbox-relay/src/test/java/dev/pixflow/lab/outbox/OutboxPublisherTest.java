@@ -14,6 +14,8 @@ import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.kafka.support.SendResult;
 
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import org.apache.kafka.clients.producer.ProducerRecord;
 
 class OutboxPublisherTest {
 
@@ -23,14 +25,14 @@ class OutboxPublisherTest {
         var kafka = kafka();
         var event = event();
         when(repository.claim(anyString(), anyInt(), any())).thenReturn(List.of(event));
-        when(kafka.send(event.topic(), event.partitionKey(), event.payload()))
+        when(kafka.send(any(ProducerRecord.class)))
                 .thenReturn(CompletableFuture.completedFuture(mock(SendResult.class)));
         when(repository.markPublished(event)).thenReturn(true);
 
         publisher(repository, kafka, ignored -> {}).publishAvailable();
 
         var order = inOrder(kafka, repository);
-        order.verify(kafka).send(event.topic(), event.partitionKey(), event.payload());
+        order.verify(kafka).send(any(ProducerRecord.class));
         order.verify(repository).markPublished(event);
         verify(repository, never()).markFailed(any(), anyString(), any());
     }
@@ -43,7 +45,7 @@ class OutboxPublisherTest {
         when(repository.claim(anyString(), anyInt(), any())).thenReturn(List.of(event));
         var failed = new CompletableFuture<SendResult<String, String>>();
         failed.completeExceptionally(new IllegalStateException("broker unavailable"));
-        when(kafka.send(event.topic(), event.partitionKey(), event.payload())).thenReturn(failed);
+        when(kafka.send(any(ProducerRecord.class))).thenReturn(failed);
 
         publisher(repository, kafka, ignored -> {}).publishAvailable();
 
@@ -57,7 +59,7 @@ class OutboxPublisherTest {
         var kafka = kafka();
         var event = event();
         when(repository.claim(anyString(), anyInt(), any())).thenReturn(List.of(event));
-        when(kafka.send(event.topic(), event.partitionKey(), event.payload()))
+        when(kafka.send(any(ProducerRecord.class)))
                 .thenReturn(CompletableFuture.completedFuture(mock(SendResult.class)));
 
         var publisher = publisher(repository, kafka,
@@ -77,13 +79,13 @@ class OutboxPublisherTest {
             AfterKafkaAckHook hook) {
         var properties = new RelayProperties("test-relay", 10, Duration.ofSeconds(30),
                 Duration.ofSeconds(1), Duration.ofMillis(1), Duration.ofSeconds(1));
-        return new OutboxPublisher(repository, kafka, properties, hook, new SimpleMeterRegistry());
+        return new OutboxPublisher(repository, kafka, properties, hook, new SimpleMeterRegistry(), new ObjectMapper());
     }
 
     private static ClaimedOutboxEvent event() {
         var paymentId = UUID.randomUUID();
         return new ClaimedOutboxEvent(UUID.randomUUID(), paymentId, 1, "payment.requested.v1",
-                "payment.requested", "{\"eventId\":\"test\"}", paymentId.toString(), Instant.now(),
+                "payment.requested", "{\"eventId\":\"test\",\"correlationId\":\"corr-test\"}", paymentId.toString(), Instant.now(),
                 "test-relay", UUID.randomUUID(), Instant.now().plusSeconds(30), 1);
     }
 }

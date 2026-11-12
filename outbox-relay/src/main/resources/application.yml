@@ -35,7 +35,7 @@ management:
   endpoints:
     web:
       exposure:
-        include: health,info,metrics,prometheus
+        include: health,prometheus
   endpoint:
     health:
       probes:
@@ -45,3 +45,22 @@ management:
       enabled: true
     livenessstate:
       enabled: true
+  metrics:
+    tags:
+      application: ${spring.application.name}
+      environment: ${PIXFLOW_ENVIRONMENT:local}
+    distribution:
+      percentiles-histogram:
+        pixflow.outbox.publish.duration: true
+      percentiles:
+        pixflow.outbox.publish.duration: 0.5,0.95,0.99
+
+logging:
+  structured:
+    format.console: logstash
+    json:
+      add:
+        service: ${spring.application.name}
+        environment: ${PIXFLOW_ENVIRONMENT:local}
+      rename:
+        "[@timestamp]": timestamp

@@ -1,0 +1,12 @@
+{
+  "uid": "pixflow-kafka-outbox", "title": "PixFlow Lab - Kafka e Outbox", "tags": ["pixflow", "gate07"], "timezone": "browser", "schemaVersion": 41, "version": 1, "refresh": "5s",
+  "time": {"from": "now-30m", "to": "now"},
+  "panels": [
+    {"id": 1, "type": "timeseries", "title": "Publicacoes Outbox", "gridPos": {"h": 8, "w": 8, "x": 0, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"refId": "A", "expr": "rate(pixflow_outbox_published_total[5m])", "legendFormat": "publicadas"}]},
+    {"id": 2, "type": "timeseries", "title": "Falhas de publicacao Kafka", "gridPos": {"h": 8, "w": 8, "x": 8, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"refId": "A", "expr": "rate(pixflow_outbox_failures_total[5m])", "legendFormat": "falhas"}]},
+    {"id": 3, "type": "stat", "title": "Outbox pendente", "gridPos": {"h": 8, "w": 8, "x": 16, "y": 0}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"refId": "A", "expr": "max(pixflow_outbox_pending)", "legendFormat": "pendentes"}]},
+    {"id": 4, "type": "timeseries", "title": "Consumer lag maximo", "description": "Metric available from the Spring Kafka consumer when partitions are assigned.", "gridPos": {"h": 9, "w": 12, "x": 0, "y": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"refId": "A", "expr": "max by (job, topic) (kafka_consumer_fetch_manager_records_lag_max)", "legendFormat": "{{job}} {{topic}}"}]},
+    {"id": 5, "type": "timeseries", "title": "Tentativas do consumer", "gridPos": {"h": 9, "w": 12, "x": 12, "y": 8}, "datasource": {"type": "prometheus", "uid": "prometheus"}, "targets": [{"refId": "A", "expr": "sum by (outcome) (rate(pixflow_payment_processing_attempts_total[5m]))", "legendFormat": "{{outcome}}"}]}
+  ]
+}
+

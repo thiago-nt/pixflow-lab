@@ -1,0 +1,203 @@
+services:
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    profiles: ["observe-metrics"]
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=2d
+      - --storage.tsdb.retention.size=512MB
+      - --web.enable-lifecycle
+    ports:
+      - "127.0.0.1:${PIXFLOW_PROMETHEUS_PORT:-9090}:9090"
+    volumes:
+      - ./infra/observability/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus_data:/prometheus
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9090/-/ready | grep -q 'Prometheus Server is Ready'"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.5
+    security_opt: ["no-new-privileges:true"]
+
+  grafana:
+    image: grafana/grafana:12.1.0
+    profiles: ["observe-metrics"]
+    environment:
+      GF_SECURITY_ADMIN_USER: pixflow_admin
+      GF_SECURITY_ADMIN_PASSWORD__FILE: /run/secrets/grafana_admin_password
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      GF_AUTH_ANONYMOUS_ENABLED: "false"
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+    ports:
+      - "127.0.0.1:${PIXFLOW_GRAFANA_PORT:-3000}:3000"
+    secrets: [grafana_admin_password]
+    volumes:
+      - ./infra/observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./infra/observability/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana_data:/var/lib/grafana
+    networks: [backend]
+    depends_on:
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3000/api/health | grep -q ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+    mem_limit: 384m
+    cpus: 0.5
+    security_opt: ["no-new-privileges:true"]
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.3
+    profiles: ["observe-logs"]
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        export ELASTIC_PASSWORD="$$(cat /run/secrets/elastic_password)"
+        exec /usr/local/bin/docker-entrypoint.sh eswrapper
+    environment:
+      discovery.type: single-node
+      xpack.security.enabled: "true"
+      xpack.security.enrollment.enabled: "false"
+      xpack.security.http.ssl.enabled: "false"
+      ES_JAVA_OPTS: -Xms512m -Xmx512m
+    secrets: [elastic_password]
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "password=$$(cat /run/secrets/elastic_password); curl -fsS -u elastic:$${password} http://127.0.0.1:9200/_cluster/health?wait_for_status=yellow | grep -q '\"status\"'"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 45s
+    restart: unless-stopped
+    mem_limit: 1280m
+    cpus: 1.0
+    security_opt: ["no-new-privileges:true"]
+
+  elasticsearch-init:
+    image: curlimages/curl:8.12.1
+    profiles: ["observe-logs"]
+    entrypoint: ["/bin/sh", "/config/elasticsearch-init.sh"]
+    secrets: [elastic_password]
+    volumes:
+      - ./infra/observability/elasticsearch/elasticsearch-init.sh:/config/elasticsearch-init.sh:ro
+    networks: [backend]
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: "no"
+    mem_limit: 64m
+    cpus: 0.25
+    security_opt: ["no-new-privileges:true"]
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.17.3
+    profiles: ["observe-logs"]
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        secret="$$(cat /run/secrets/elastic_password)"
+        export ELASTICSEARCH_PASSWORD="$${secret}"
+        export XPACK_ENCRYPTEDSAVEDOBJECTS_ENCRYPTIONKEY="$${secret}"
+        export XPACK_SECURITY_ENCRYPTIONKEY="$${secret}"
+        export XPACK_REPORTING_ENCRYPTIONKEY="$${secret}"
+        exec /usr/local/bin/kibana-docker
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+      ELASTICSEARCH_USERNAME: kibana_system
+      XPACK_TELEMETRY_ENABLED: "false"
+      NODE_OPTIONS: --max-old-space-size=512
+    secrets: [elastic_password]
+    ports:
+      - "127.0.0.1:${PIXFLOW_KIBANA_PORT:-5601}:5601"
+    volumes:
+      - kibana_data:/usr/share/kibana/data
+    networks: [backend]
+    depends_on:
+      elasticsearch-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:5601/api/status | grep -q 'available'"]
+      interval: 15s
+      timeout: 10s
+      retries: 30
+      start_period: 45s
+    restart: unless-stopped
+    mem_limit: 768m
+    cpus: 0.75
+    security_opt: ["no-new-privileges:true"]
+
+  kibana-init:
+    image: curlimages/curl:8.12.1
+    profiles: ["observe-logs"]
+    entrypoint: ["/bin/sh", "/config/kibana-init.sh"]
+    secrets: [elastic_password]
+    volumes:
+      - ./infra/observability/elasticsearch/kibana-init.sh:/config/kibana-init.sh:ro
+    networks: [backend]
+    depends_on:
+      kibana:
+        condition: service_healthy
+    restart: "no"
+    mem_limit: 64m
+    cpus: 0.25
+    security_opt: ["no-new-privileges:true"]
+
+  fluent-bit:
+    image: fluent/fluent-bit:4.1.0-debug
+    profiles: ["observe-logs"]
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        export ELASTIC_PASSWORD="$$(cat /run/secrets/elastic_password)"
+        exec /fluent-bit/bin/fluent-bit -c /fluent-bit/etc/fluent-bit.conf
+    secrets: [elastic_password]
+    volumes:
+      - ./infra/observability/fluent-bit/fluent-bit.conf:/fluent-bit/etc/fluent-bit.conf:ro
+      - ./infra/observability/fluent-bit/parsers.conf:/fluent-bit/etc/pixflow-parsers.conf:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+      - fluent_bit_data:/buffers
+    networks: [backend]
+    depends_on:
+      elasticsearch-init:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:2020/api/v1/health | grep -q '\"version\"'"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 15s
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.25
+    security_opt: ["no-new-privileges:true"]
+
+volumes:
+  prometheus_data:
+    name: pixflow-lab-prometheus-data
+  grafana_data:
+    name: pixflow-lab-grafana-data
+  elasticsearch_data:
+    name: pixflow-lab-elasticsearch-data
+  kibana_data:
+    name: pixflow-lab-kibana-data
+  fluent_bit_data:
+    name: pixflow-lab-fluent-bit-data
+
+secrets:
+  grafana_admin_password:
+    file: ./secrets/grafana_admin_password.txt
+  elastic_password:
+    file: ./secrets/elastic_password.txt

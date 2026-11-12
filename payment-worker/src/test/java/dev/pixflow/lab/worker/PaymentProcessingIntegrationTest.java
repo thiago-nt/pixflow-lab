@@ -148,7 +148,7 @@ class PaymentProcessingIntegrationTest {
             var oldToken=jdbc.queryForObject("SELECT fencing_token FROM payments WHERE payment_id=?",Long.class,paymentId);
             jdbc.update("UPDATE payments SET lease_until=clock_timestamp()-interval '1 second' WHERE payment_id=?",paymentId);
             var workerB=new PaymentProcessingService(jdbc,transactionTemplate,psp,new ObjectMapper().findAndRegisterModules(),()->{},leases,
-                    new WorkerIdentity("worker-B"),"pixflow-payment-worker-v1","payment.result.v1");
+                    new WorkerIdentity("worker-B"),"pixflow-payment-worker-v1","payment.result.v1",new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
             workerB.process(event);
             var newToken=jdbc.queryForObject("SELECT fencing_token FROM payments WHERE payment_id=?",Long.class,paymentId);
             assertThat(newToken).isGreaterThan(oldToken);
@@ -180,5 +180,6 @@ class PaymentProcessingIntegrationTest {
         @Bean ObjectMapper objectMapper() { return new ObjectMapper().findAndRegisterModules(); }
         @Bean AfterPspCallHook afterPspCallHook() { return () -> {}; }
         @Bean TransactionTemplate transactionTemplate(org.springframework.transaction.PlatformTransactionManager manager) { return new TransactionTemplate(manager); }
+        @Bean io.micrometer.core.instrument.MeterRegistry meterRegistry() { return new io.micrometer.core.instrument.simple.SimpleMeterRegistry(); }
     }
 }

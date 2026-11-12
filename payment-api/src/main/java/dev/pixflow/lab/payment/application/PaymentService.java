@@ -10,6 +10,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
+import io.micrometer.core.instrument.MeterRegistry;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -31,15 +32,17 @@ public class PaymentService {
     private final ObjectMapper json;
     private final Clock clock;
     private final AfterPaymentCommitHook afterCommit;
+    private final MeterRegistry meters;
 
     @Autowired
     public PaymentService(PaymentStore store, TransactionTemplate transactions, ObjectMapper json, Clock clock,
-            AfterPaymentCommitHook afterCommit) {
+            AfterPaymentCommitHook afterCommit, MeterRegistry meters) {
         this.store = store;
         this.transactions = transactions;
         this.json = json;
         this.clock = clock;
         this.afterCommit = afterCommit;
+        this.meters = meters;
     }
 
     public PaymentResult create(String idempotencyKey, CreatePaymentCommand command, String correlationId) {
@@ -64,7 +67,10 @@ public class PaymentService {
                 store.insertOutbox(eventId, payment, correlationId,
                         eventPayload(eventId, payment, correlationId, now, command.simulationScenario()));
                 store.insertAudit(paymentId, eventId, correlationId);
-                log.info("operation=payment_create paymentId={} result=created correlationId={}", paymentId, correlationId);
+                meters.counter("pixflow.payment.requests", "outcome", "created").increment();
+                log.atInfo().addKeyValue("operation", "payment_create").addKeyValue("paymentId", paymentId)
+                        .addKeyValue("outcome", "created")
+                        .log("payment created");
                 return new PaymentResult(payment, true, correlationId);
             });
             afterCommit.afterCommit(idempotencyKey.trim(), result);
@@ -97,11 +103,17 @@ public class PaymentService {
                 && payment.money().currency().equals(command.currency())
                 && payment.merchantReference().equals(command.merchantReference());
         if (!hashMatches || !payloadMatches) {
-            log.warn("operation=payment_create paymentId={} result=idempotency_conflict correlationId={}", existing.paymentId(), correlationId);
+            meters.counter("pixflow.payment.requests", "outcome", "idempotency_conflict").increment();
+            log.atWarn().addKeyValue("operation", "payment_create").addKeyValue("paymentId", existing.paymentId())
+                    .addKeyValue("outcome", "idempotency_conflict")
+                    .addKeyValue("errorCode", "IDEMPOTENCY_CONFLICT").log("payment idempotency conflict");
             throw new IdempotencyConflictException();
         }
         var result = new PaymentResult(payment, false, correlationId);
-        log.info("operation=payment_create paymentId={} result=idempotent_replay correlationId={}", existing.paymentId(), correlationId);
+        meters.counter("pixflow.payment.requests", "outcome", "idempotent_replay").increment();
+        log.atInfo().addKeyValue("operation", "payment_create").addKeyValue("paymentId", existing.paymentId())
+                .addKeyValue("outcome", "idempotent_replay")
+                .log("payment idempotent replay");
         return result;
     }
 

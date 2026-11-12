@@ -134,6 +134,7 @@ class LeaseServiceIntegrationTest {
         org.mockito.Mockito.verify(kafka,org.mockito.Mockito.times(2)).send(org.mockito.ArgumentMatchers.any(org.apache.kafka.clients.producer.ProducerRecord.class));
     }
     @TestConfiguration static class Config {
+        @Bean io.micrometer.core.instrument.MeterRegistry meterRegistry() { return new io.micrometer.core.instrument.simple.SimpleMeterRegistry(); }
         @Bean TransactionTemplate transactionTemplate(PlatformTransactionManager manager) { return new TransactionTemplate(manager); }
     }
 }

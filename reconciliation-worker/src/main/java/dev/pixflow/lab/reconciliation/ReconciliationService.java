@@ -11,9 +11,16 @@ import java.util.concurrent.ThreadLocalRandom;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
+import io.micrometer.core.instrument.MeterRegistry;
+import io.micrometer.core.instrument.Timer;
+import java.time.Duration;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.slf4j.MDC;
 
 @Service
 public class ReconciliationService {
+    private static final Logger log = LoggerFactory.getLogger(ReconciliationService.class);
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     private final PspLookupClient psp;
@@ -21,10 +28,11 @@ public class ReconciliationService {
     private final ReconciliationProperties properties;
     private final ReconciliationIdentity identity;
     private final ObjectMapper json;
+    private final MeterRegistry meters;
 
     public ReconciliationService(JdbcTemplate jdbc, TransactionTemplate tx, PspLookupClient psp,
             AfterPspLookupHook afterLookup, ReconciliationProperties properties,
-            ReconciliationIdentity identity, ObjectMapper json) {
+            ReconciliationIdentity identity, ObjectMapper json, MeterRegistry meters) {
         this.jdbc = jdbc;
         this.tx = tx;
         this.psp = psp;
@@ -32,6 +40,7 @@ public class ReconciliationService {
         this.properties = properties;
         this.identity = identity;
         this.json = json;
+        this.meters = meters;
     }
 
     public int discoverUnknownPayments() {
@@ -112,18 +121,29 @@ public class ReconciliationService {
     }
 
     public void reconcile(ReconciliationClaim claim) {
+        var sample = Timer.start(meters);
+        var metricOutcome = "temporary_failure";
+        MDC.put("correlationId", claim.correlationId());
+        MDC.put("paymentId", claim.paymentId().toString());
         final PspLookupResult result;
         try {
-            result = psp.lookup(claim.externalReference());
-        } catch (RuntimeException failure) {
-            retry(claim, PspLookupResult.temporaryFailure(failure.getClass().getSimpleName() + ": " + failure.getMessage()));
-            return;
-        }
-        afterLookup.afterLookup(claim, result);
-        switch (result.status()) {
-            case APPROVED -> complete(claim, result, "SUCCEEDED", "RECONCILED_APPROVED", "CONFIRMED_APPROVED");
-            case REJECTED -> complete(claim, result, "FAILED", "RECONCILED_REJECTED", "CONFIRMED_REJECTED");
-            case UNKNOWN, NOT_FOUND, TEMPORARY_FAILURE -> retry(claim, result);
+            try {
+                result = psp.lookup(claim.externalReference());
+            } catch (RuntimeException failure) {
+                retry(claim, PspLookupResult.temporaryFailure(failure.getClass().getSimpleName() + ": " + failure.getMessage()));
+                return;
+            }
+            metricOutcome = result.status().name().toLowerCase();
+            afterLookup.afterLookup(claim, result);
+            switch (result.status()) {
+                case APPROVED -> complete(claim, result, "SUCCEEDED", "RECONCILED_APPROVED", "CONFIRMED_APPROVED");
+                case REJECTED -> complete(claim, result, "FAILED", "RECONCILED_REJECTED", "CONFIRMED_REJECTED");
+                case UNKNOWN, NOT_FOUND, TEMPORARY_FAILURE -> retry(claim, result);
+            }
+        } finally {
+            meters.counter("pixflow.reconciliation.attempts", "outcome", metricOutcome).increment();
+            sample.stop(Timer.builder("pixflow.reconciliation.duration").tag("outcome", metricOutcome).register(meters));
+            MDC.clear();
         }
     }
 
@@ -172,6 +192,8 @@ public class ReconciliationService {
                      WHERE payment_id=? AND claimed_by=? AND claim_token=?
                     """, auditOutcome, claim.paymentId(), claim.ownerId(), claim.claimToken());
             audit(claim, auditOutcome, result.transaction().transactionId(), result.detail());
+            meters.counter("pixflow.reconciliation.results", "outcome", finalStatus.toLowerCase()).increment();
+            recordResolution(claim.paymentId(), finalStatus.toLowerCase());
         });
     }
 
@@ -242,6 +264,8 @@ public class ReconciliationService {
                  WHERE payment_id=? AND claimed_by=? AND claim_token=?
                 """, sanitize(result.detail()), claim.paymentId(), claim.ownerId(), claim.claimToken());
         audit(claim, "MANUAL_REVIEW", transactionId(result), "attempt limit reached: " + result.detail());
+        meters.counter("pixflow.reconciliation.results", "outcome", "manual_review").increment();
+        recordResolution(claim.paymentId(), "manual_review");
     }
 
     private void finishPreservingTerminal(ReconciliationClaim claim, String current) {
@@ -259,6 +283,7 @@ public class ReconciliationService {
     }
 
     private void stale(ReconciliationClaim claim, String detail) {
+        meters.counter("pixflow.fencing.rejections", "component", "reconciliation").increment();
         jdbc.update("""
                 UPDATE reconciliation_jobs
                    SET next_attempt_at=clock_timestamp(),last_result='STALE_WRITE_REJECTED',last_error=?,
@@ -286,6 +311,9 @@ public class ReconciliationService {
                 VALUES (?,?,?,?,?,?,?,?,?)
                 """, claim.paymentId(), claim.attemptNumber(), claim.ownerId(), claim.fencingToken(),
                 claim.correlationId(), claim.externalReference(), outcome, transactionId, sanitize(detail));
+        log.atInfo().addKeyValue("operation", "reconciliation").addKeyValue("outcome", outcome.toLowerCase())
+                .addKeyValue("attempt", claim.attemptNumber()).addKeyValue("fencingToken", claim.fencingToken())
+                .log("reconciliation audit persisted");
     }
 
     private PaymentResultEvent resultEvent(ReconciliationClaim claim, String state, String code) {
@@ -328,6 +356,12 @@ public class ReconciliationService {
         if (value == null) return null;
         var clean = value.replaceAll("[\\r\\n\\t]+", " ");
         return clean.length() <= 500 ? clean : clean.substring(0, 500);
+    }
+
+    private void recordResolution(UUID paymentId, String outcome) {
+        var millis = jdbc.queryForObject("SELECT GREATEST(0,EXTRACT(EPOCH FROM (clock_timestamp()-created_at))*1000)::bigint FROM payments WHERE payment_id=?", Long.class, paymentId);
+        if (millis != null) Timer.builder("pixflow.payment.resolution").tag("outcome", outcome)
+                .register(meters).record(Duration.ofMillis(millis));
     }
 
     private record Candidate(UUID paymentId, String externalReference, int attemptCount, int maxAttempts,

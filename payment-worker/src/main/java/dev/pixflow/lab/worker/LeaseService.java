@@ -9,6 +9,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
+import io.micrometer.core.instrument.MeterRegistry;
 
 @Service
 public class LeaseService {
@@ -16,14 +17,17 @@ public class LeaseService {
     private final TransactionTemplate tx;
     private final long ttlMillis;
     private final String groupId;
+    private final MeterRegistry meters;
 
     public LeaseService(JdbcTemplate jdbc, TransactionTemplate tx,
             @Value("${pixflow.worker.lease-ttl-ms:30000}") long ttlMillis,
-            @Value("${pixflow.worker.group-id:pixflow-payment-worker-v1}") String groupId) {
+            @Value("${pixflow.worker.group-id:pixflow-payment-worker-v1}") String groupId,
+            MeterRegistry meters) {
         this.jdbc = jdbc;
         this.tx = tx;
         this.ttlMillis = ttlMillis;
         this.groupId = groupId;
+        this.meters = meters;
     }
 
     public Optional<PaymentLease> acquire(UUID paymentId, String ownerId, PaymentRequestedEvent event) {
@@ -39,6 +43,7 @@ public class LeaseService {
                     appendEvent(lease,event,"ACQUIRED","lease granted by PostgreSQL clock");
                     return lease;
                 }).orElse(null));
+        meters.counter("pixflow.lease.acquisitions", "outcome", acquired == null ? "busy" : "acquired").increment();
         return Optional.ofNullable(acquired);
     }
     public Optional<Instant> renew(PaymentLease lease, PaymentRequestedEvent event) {
@@ -62,11 +67,15 @@ public class LeaseService {
                     WHERE payment_id=? AND lease_owner=? AND fencing_token=? AND lease_until > clock_timestamp()
                     """,lease.paymentId(),lease.ownerId(),lease.fencingToken());
             if (count==1) appendEvent(lease,event,"RELEASED","result durably persisted");
-            else recordRejected(lease,event,"lease expired before release");
+            else {
+                meters.counter("pixflow.lease.expirations").increment();
+                recordRejected(lease,event,"lease expired before release");
+            }
         });
     }
 
     public void recordRejected(PaymentLease lease, PaymentRequestedEvent event, String detail) {
+        meters.counter("pixflow.fencing.rejections").increment();
         tx.executeWithoutResult(status -> jdbc.update("""
                 INSERT INTO payment_lease_audit(lease_event_id,payment_id,owner_id,fencing_token,event_type,lease_until,event_id,correlation_id,detail)
                 VALUES (?,?,?,?,'WRITE_REJECTED',?, ?,?,?)

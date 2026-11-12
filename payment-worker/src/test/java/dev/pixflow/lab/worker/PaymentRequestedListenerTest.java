@@ -26,7 +26,7 @@ class PaymentRequestedListenerTest {
         @SuppressWarnings("unchecked") var kafka=(KafkaTemplate<String,String>)mock(KafkaTemplate.class);
         when(kafka.send(any(ProducerRecord.class))).thenReturn(CompletableFuture.completedFuture(null));
         var ack=mock(Acknowledgment.class);
-        var listener=new PaymentRequestedListener(processing,new ObjectMapper(),kafka,"payment.dlt.v1");
+        var listener=new PaymentRequestedListener(processing,new ObjectMapper(),kafka,"payment.dlt.v1",new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
         listener.consume(new ConsumerRecord<>("payment.requested.v1",0,2,"invalid-key","{bad-json"),ack);
         verify(kafka).send(any(ProducerRecord.class));
         verify(ack).acknowledge();
@@ -40,7 +40,7 @@ class PaymentRequestedListenerTest {
         var record=new ConsumerRecord<>("payment.requested.v1",0,3,"payment-key",json.writeValueAsString(event));
         doThrow(new IllegalStateException("database unavailable")).when(processing).process(event);
         var ack=mock(Acknowledgment.class);
-        var listener=new PaymentRequestedListener(processing,json,kafka,"payment.dlt.v1");
+        var listener=new PaymentRequestedListener(processing,json,kafka,"payment.dlt.v1",new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
         assertThatThrownBy(()->listener.consume(record,ack)).isInstanceOf(IllegalStateException.class);
         verify(ack,never()).acknowledge();
         verify(kafka,never()).send(any(ProducerRecord.class));

@@ -230,7 +230,7 @@ class ReconciliationServiceIntegrationTest {
 
     private ReconciliationService service(String owner) {
         return new ReconciliationService(jdbc, tx, psp, afterLookup, properties,
-                new ReconciliationIdentity(owner), json);
+                new ReconciliationIdentity(owner), json, new io.micrometer.core.instrument.simple.SimpleMeterRegistry());
     }
 
     private UUID insertUnknown(String suffix) {
