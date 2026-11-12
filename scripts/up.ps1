@@ -5,5 +5,5 @@ Invoke-PixFlowCompose run --rm flyway
 Invoke-PixFlowCompose run --rm kafka-init
 Invoke-PixFlowCompose up -d --build --wait payment-api
 Invoke-PixFlowCompose up -d --build --wait outbox-relay
-Invoke-PixFlowCompose up -d --build --wait psp-simulator payment-worker
+Invoke-PixFlowCompose up -d --build --wait psp-simulator payment-worker reconciliation-worker
 Invoke-PixFlowCompose ps

@@ -50,7 +50,8 @@ class PspSimulatorIntegrationTest {
     static void schema() throws Exception {
         try (var connection = DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())) {
             for (var migration : List.of("V001__create_payment_core.sql", "V002__payment_api_pending_state.sql",
-                    "V003__outbox_claim_ownership.sql", "V004__worker_and_psp_simulator.sql")) {
+                    "V003__outbox_claim_ownership.sql", "V004__worker_and_psp_simulator.sql",
+                    "V005__payment_worker_lease_fencing.sql", "V006__reconciliation_worker.sql")) {
                 var path = Path.of(System.getProperty("user.dir"), "infra", "postgres", "migrations", migration);
                 if (!Files.exists(path)) path = Path.of(System.getProperty("user.dir"), "..", "infra", "postgres", "migrations", migration);
                 ScriptUtils.executeSqlScript(connection, new FileSystemResource(path));
@@ -92,6 +93,18 @@ class PspSimulatorIntegrationTest {
         assertThat(replay.responseLost()).isFalse();
         assertThat(replay.transaction().transactionId()).isEqualTo(first.transaction().transactionId());
         assertThat(queried.responseLost()).isTrue();
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM psp_simulator.transactions", Integer.class)).isEqualTo(1);
+    }
+
+    @Test
+    void rejectedTimeoutPersistsRejectionAndLosesOnlyTheFirstResponse() {
+        var request = request(SimulationScenario.REJECTED_TIMEOUT);
+        var first = simulator.charge(request);
+        var queried = simulator.findByReference(request.externalReference()).orElseThrow();
+
+        assertThat(first.responseLost()).isTrue();
+        assertThat(first.transaction().outcome()).isEqualTo(PspOutcome.REJECTED);
+        assertThat(queried.outcome()).isEqualTo(PspOutcome.REJECTED);
         assertThat(jdbc.queryForObject("SELECT count(*) FROM psp_simulator.transactions", Integer.class)).isEqualTo(1);
     }
 

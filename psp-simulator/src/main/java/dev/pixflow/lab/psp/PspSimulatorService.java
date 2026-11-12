@@ -20,8 +20,12 @@ public class PspSimulatorService {
     @Transactional
     public ChargeResult charge(PspChargeRequest request) {
         var id = UUID.randomUUID();
-        var outcome = request.simulationScenario() == SimulationScenario.REJECTED ? PspOutcome.REJECTED : PspOutcome.APPROVED;
-        var lost = request.simulationScenario() == SimulationScenario.TIMEOUT;
+        var outcome = switch (request.simulationScenario()) {
+            case REJECTED, REJECTED_TIMEOUT -> PspOutcome.REJECTED;
+            case APPROVED, TIMEOUT -> PspOutcome.APPROVED;
+        };
+        var lost = request.simulationScenario() == SimulationScenario.TIMEOUT
+                || request.simulationScenario() == SimulationScenario.REJECTED_TIMEOUT;
         int inserted = jdbc.update("""
                 INSERT INTO psp_simulator.transactions(transaction_id,payment_id,external_reference,amount_minor,currency,simulation_scenario,outcome,response_lost)
                 VALUES (?,?,?,?,?,?,?,?) ON CONFLICT DO NOTHING

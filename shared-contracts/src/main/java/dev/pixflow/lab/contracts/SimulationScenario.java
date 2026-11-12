@@ -3,5 +3,6 @@ package dev.pixflow.lab.contracts;
 public enum SimulationScenario {
     APPROVED,
     REJECTED,
-    TIMEOUT
+    TIMEOUT,
+    REJECTED_TIMEOUT
 }

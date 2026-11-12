@@ -241,6 +241,44 @@ services:
     security_opt:
       - no-new-privileges:true
 
+  reconciliation-worker:
+    build:
+      context: .
+      dockerfile: reconciliation-worker/Dockerfile
+    environment:
+      PIXFLOW_DB_URL: jdbc:postgresql://postgres:5432/${PIXFLOW_DB_NAME:-pixflow}
+      PIXFLOW_DB_USER: ${PIXFLOW_DB_USER:-pixflow_app}
+      PIXFLOW_DB_PASSWORD: ${PIXFLOW_DB_PASSWORD:-pixflow_lab_dev_only}
+      PIXFLOW_PSP_URL: http://psp-simulator:8080
+      PIXFLOW_RECONCILIATION_OWNER_PREFIX: reconciliation-worker
+      PIXFLOW_RECONCILIATION_LEASE_TTL: 30s
+      PIXFLOW_RECONCILIATION_POLL_DELAY: 2s
+      PIXFLOW_RECONCILIATION_BATCH_SIZE: 10
+      PIXFLOW_RECONCILIATION_MAX_ATTEMPTS: 5
+      PIXFLOW_RECONCILIATION_BASE_BACKOFF: 2s
+      PIXFLOW_RECONCILIATION_MAX_BACKOFF: 5m
+      PIXFLOW_RECONCILIATION_JITTER: 500ms
+    networks:
+      - backend
+    depends_on:
+      postgres:
+        condition: service_healthy
+      flyway:
+        condition: service_completed_successfully
+      psp-simulator:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8080/actuator/health/readiness | grep -q UP"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 20s
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
+    security_opt:
+      - no-new-privileges:true
+
   inspector-db-init:
     image: postgres:18.4-alpine
     profiles: ["inspect"]

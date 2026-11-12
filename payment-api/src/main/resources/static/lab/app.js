@@ -31,8 +31,18 @@ function paymentCard(payment) {
       `${item.occurredAt} ${item.eventType} owner=${item.ownerId} token=${item.fencingToken}${item.detail ? ` | ${item.detail}` : ''}`
     ).join('\n') || 'No persisted lease events.';
     const leaseSummary = `Current lease: owner=${lease?.ownerId ?? 'none'}; token=${lease?.fencingToken ?? 'unavailable'}; expires=${lease?.leaseUntil ?? 'no active lease'}`;
-    const pspReference = detail.psp?.externalReference ?? 'not yet recorded by simulator';
-    byId('detailText').textContent = `Publication: ${publication}\nEventId: ${outbox?.eventId ?? 'unavailable'}\n${leaseSummary}\nPSP reference: ${pspReference}\n\nLease history:\n${leaseHistory}\n\n${JSON.stringify(detail, null, 2)}`;
+    const pspReference = detail.psp?.externalReference
+      ?? detail.reconciliationHistory?.[0]?.externalReference
+      ?? 'not yet recorded by simulator';
+    const reconciliation = detail.reconciliation;
+    const reconciliationHistory = (detail.reconciliationHistory || []).map(item =>
+      `${item.occurredAt} attempt=${item.attemptNumber} ${item.outcome} token=${item.fencingToken}${item.detail ? ` | ${item.detail}` : ''}`
+    ).join('\n') || 'No persisted reconciliation attempts.';
+    const nextAttempt = reconciliation?.completedAt ? 'none (completed)' : (reconciliation?.nextAttemptAt ?? 'none');
+    const reconciliationSummary = reconciliation
+      ? `Reconciliation: attempts=${reconciliation.attemptCount}/${reconciliation.maxAttempts}; last=${reconciliation.lastAttemptAt ?? 'never'}; next=${nextAttempt}; result=${reconciliation.lastResult ?? 'pending'}; error=${reconciliation.lastError ?? 'none'}`
+      : 'Reconciliation: not required';
+    byId('detailText').textContent = `Publication: ${publication}\nEventId: ${outbox?.eventId ?? 'unavailable'}\n${leaseSummary}\nPSP reference: ${pspReference}\n${reconciliationSummary}\n\nReconciliation history:\n${reconciliationHistory}\n\nLease history:\n${leaseHistory}\n\n${JSON.stringify(detail, null, 2)}`;
     byId('detail').showModal();
   };
   return button;

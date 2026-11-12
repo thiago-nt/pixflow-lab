@@ -14,7 +14,7 @@ public final class PaymentDtos {
     public record CreateRequest(@NotBlank @Size(max=100) String accountId,
             @NotNull @DecimalMin(value="0.01") @Digits(integer=16,fraction=2) BigDecimal amount,
             @NotBlank String currency,@NotBlank @Size(max=120) String merchantReference,
-            @Pattern(regexp="(?i)^(APPROVED|REJECTED|TIMEOUT)$") String simulationScenario) {
+            @Pattern(regexp="(?i)^(APPROVED|REJECTED|TIMEOUT|REJECTED_TIMEOUT)$") String simulationScenario) {
         public CreatePaymentCommand command(){
             var scenario = simulationScenario == null || simulationScenario.isBlank()
                     ? SimulationScenario.APPROVED
