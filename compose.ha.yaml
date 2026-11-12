@@ -1,0 +1,26 @@
+services:
+  payment-api:
+    ports: !reset []
+
+  payment-api-lb:
+    image: haproxy:3.2-alpine
+    profiles: ["ha"]
+    ports:
+      - "127.0.0.1:${PIXFLOW_API_PORT:-8080}:8080"
+    volumes:
+      - ./infra/haproxy/payment-api.cfg:/usr/local/etc/haproxy/haproxy.cfg:ro
+    networks:
+      - backend
+    depends_on:
+      payment-api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "haproxy", "-c", "-f", "/usr/local/etc/haproxy/haproxy.cfg"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+    mem_limit: 128m
+    cpus: 0.25
+    security_opt:
+      - no-new-privileges:true

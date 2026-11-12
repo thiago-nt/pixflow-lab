@@ -30,13 +30,16 @@ public class PaymentService {
     private final TransactionTemplate transactions;
     private final ObjectMapper json;
     private final Clock clock;
+    private final AfterPaymentCommitHook afterCommit;
 
     @Autowired
-    public PaymentService(PaymentStore store, TransactionTemplate transactions, ObjectMapper json, Clock clock) {
+    public PaymentService(PaymentStore store, TransactionTemplate transactions, ObjectMapper json, Clock clock,
+            AfterPaymentCommitHook afterCommit) {
         this.store = store;
         this.transactions = transactions;
         this.json = json;
         this.clock = clock;
+        this.afterCommit = afterCommit;
     }
 
     public PaymentResult create(String idempotencyKey, CreatePaymentCommand command, String correlationId) {
@@ -51,7 +54,7 @@ public class PaymentService {
             return existingResult(existing.get(), requestHash, legacyRequestHash, command, correlationId);
         }
         try {
-            return transactions.execute(status -> {
+            var result = transactions.execute(status -> {
                 var now = Instant.now(clock);
                 var paymentId = UUID.randomUUID();
                 var eventId = UUID.randomUUID();
@@ -64,6 +67,8 @@ public class PaymentService {
                 log.info("operation=payment_create paymentId={} result=created correlationId={}", paymentId, correlationId);
                 return new PaymentResult(payment, true, correlationId);
             });
+            afterCommit.afterCommit(idempotencyKey.trim(), result);
+            return result;
         } catch (DataIntegrityViolationException race) {
             for (int attempt = 0; attempt < 20; attempt++) {
                 var winner = store.findIdempotency(command.accountId(), keyDigest);
