@@ -19,10 +19,15 @@ import io.micrometer.core.instrument.Timer;
 import java.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.trace.StatusCode;
+import dev.pixflow.lab.observability.TraceContextSnapshot;
 
 @Service
 public class PaymentProcessingService {
     private static final Logger log = LoggerFactory.getLogger(PaymentProcessingService.class);
+    private static final io.opentelemetry.api.trace.Tracer tracer =
+            GlobalOpenTelemetry.getTracer("dev.pixflow.lab.payment-worker");
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     private final PspClient psp;
@@ -49,12 +54,20 @@ public class PaymentProcessingService {
             throw new IllegalArgumentException("invalid payment.requested event");
         }
         var payload = serialize(event);
-        var state = tx.execute(status -> {
+        var idempotencySpan = tracer.spanBuilder("payment.idempotency_check").startSpan();
+        final PaymentRow state;
+        try (var scope = idempotencySpan.makeCurrent()) {
+            idempotencySpan.setAttribute("payment.id", event.paymentId().toString());
+            state = tx.execute(status -> {
             if (jdbc.queryForObject("SELECT count(*) FROM inbox_processed WHERE consumer_name=? AND event_id=?", Integer.class, groupId, event.eventId()) > 0) return null;
             return jdbc.query("SELECT payment_id,external_reference,amount_minor,currency,status FROM payments WHERE payment_id=?",
                     (rs,n)->new PaymentRow(rs.getObject(1,UUID.class),rs.getString(2),rs.getLong(3),rs.getString(4).trim(),rs.getString(5)),event.paymentId()).stream().findFirst()
                     .orElseThrow(() -> new IllegalArgumentException("payment does not exist"));
-        });
+            });
+            idempotencySpan.setAttribute("outcome", state == null ? "duplicate" : "new");
+        } finally {
+            idempotencySpan.end();
+        }
         if (state == null) return;
         if (state.amountMinor()!=event.amountMinor() || !state.currency().equals(event.currency())) throw new IllegalArgumentException("event does not match payment");
         if (state.status().equals("SUCCEEDED") || state.status().equals("FAILED") || state.status().equals("MANUAL_REVIEW")) {
@@ -84,15 +97,25 @@ public class PaymentProcessingService {
             }
 
             PspTransactionView outcome;
+            var pspSpan = tracer.spanBuilder("psp.payment.execute").startSpan();
+            pspSpan.setAttribute("payment.id", event.paymentId().toString());
             try {
-                var existing = psp.find(lease.externalReference());
-                if (existing.isPresent()) outcome = existing.get();
-                else outcome = psp.charge(new PspChargeRequest(event.paymentId(),lease.externalReference(),lease.amountMinor(),lease.currency(),
-                        event.simulationScenario()==null ? SimulationScenario.APPROVED : event.simulationScenario()));
-                afterPspCall.afterCall();
+                try (var scope = pspSpan.makeCurrent()) {
+                    var existing = psp.find(lease.externalReference());
+                    if (existing.isPresent()) outcome = existing.get();
+                    else outcome = psp.charge(new PspChargeRequest(event.paymentId(),lease.externalReference(),lease.amountMinor(),lease.currency(),
+                            event.simulationScenario()==null ? SimulationScenario.APPROVED : event.simulationScenario()));
+                    pspSpan.setAttribute("outcome", outcome.outcome().name().toLowerCase());
+                    afterPspCall.afterCall();
+                }
             } catch (PspOutcomeUnknownException ambiguous) {
+                pspSpan.setAttribute("outcome", "unknown");
+                pspSpan.recordException(ambiguous);
+                pspSpan.setStatus(StatusCode.ERROR, "PSP outcome unknown");
                 finalizePayment(event,lease,"UNKNOWN","PSP_RESPONSE_LOST",payload);
                 return;
+            } finally {
+                pspSpan.end();
             }
             var finalStatus = outcome.outcome()==PspOutcome.APPROVED ? "SUCCEEDED" : "FAILED";
             finalizePayment(event,lease,finalStatus,outcome.outcome().name(),payload);
@@ -157,8 +180,9 @@ public class PaymentProcessingService {
         var result=new PaymentResultEvent(UUID.randomUUID(),event.paymentId(),"payment.result",1,Instant.now(),event.correlationId(),state,code);
         try {
             var payload=json.writeValueAsString(result);
-            jdbc.update("INSERT INTO outbox_events(event_id,aggregate_id,aggregate_version,topic,event_type,payload_json,partition_key) SELECT ?,payment_id,version,?,'payment.result',?::jsonb,payment_id::text FROM payments WHERE payment_id=?",
-                    result.eventId(),resultTopic,payload,event.paymentId());
+            var traceContext = TraceContextSnapshot.capture();
+            jdbc.update("INSERT INTO outbox_events(event_id,aggregate_id,aggregate_version,topic,event_type,payload_json,partition_key,trace_parent,trace_state) SELECT ?,payment_id,version,?,'payment.result',?::jsonb,payment_id::text,?,? FROM payments WHERE payment_id=?",
+                    result.eventId(),resultTopic,payload,traceContext.traceparent(),traceContext.tracestate(),event.paymentId());
         } catch (JsonProcessingException e) { throw new IllegalStateException("could not serialize payment result",e); }
     }
 

@@ -69,6 +69,7 @@ public class OutboxRepository {
                 rs.getObject("aggregate_id", java.util.UUID.class), rs.getLong("aggregate_version"),
                 rs.getString("topic"), rs.getString("event_type"), rs.getString("payload_json"),
                 rs.getString("partition_key"), rs.getTimestamp("created_at").toInstant(),
+                rs.getString("trace_parent"), rs.getString("trace_state"),
                 rs.getString("claimed_by"), rs.getObject("claim_token", java.util.UUID.class),
                 rs.getTimestamp("claimed_until").toInstant(), rs.getInt("attempt_count"));
     }

@@ -11,11 +11,15 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.StatusCode;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 import dev.pixflow.lab.contracts.PaymentRequestedEvent;
+import dev.pixflow.lab.observability.TraceContextSnapshot;
 import dev.pixflow.lab.payment.domain.IdempotencyConflictException;
 import dev.pixflow.lab.payment.domain.InvalidPaymentException;
 import dev.pixflow.lab.payment.domain.Money;
@@ -27,6 +31,8 @@ import dev.pixflow.lab.payment.domain.PaymentStatus;
 public class PaymentService {
 
     private static final Logger log = LoggerFactory.getLogger(PaymentService.class);
+    private static final io.opentelemetry.api.trace.Tracer tracer =
+            GlobalOpenTelemetry.getTracer("dev.pixflow.lab.payment-api");
     private final PaymentStore store;
     private final TransactionTemplate transactions;
     private final ObjectMapper json;
@@ -46,6 +52,20 @@ public class PaymentService {
     }
 
     public PaymentResult create(String idempotencyKey, CreatePaymentCommand command, String correlationId) {
+        var span = tracer.spanBuilder("payment.create").startSpan();
+        try (var scope = span.makeCurrent()) {
+            span.setAttribute("operation", "payment.create");
+            return createWithinTrace(idempotencyKey, command, correlationId);
+        } catch (RuntimeException failure) {
+            span.recordException(failure);
+            span.setStatus(StatusCode.ERROR, failure.getClass().getSimpleName());
+            throw failure;
+        } finally {
+            span.end();
+        }
+    }
+
+    private PaymentResult createWithinTrace(String idempotencyKey, CreatePaymentCommand command, String correlationId) {
         if (idempotencyKey == null || idempotencyKey.isBlank() || idempotencyKey.length() > 200) {
             throw new InvalidPaymentException("Idempotency-Key is required and must have at most 200 characters");
         }
@@ -62,10 +82,27 @@ public class PaymentService {
                 var paymentId = UUID.randomUUID();
                 var eventId = UUID.randomUUID();
                 var payment = new Payment(paymentId, command.accountId(), new Money(command.amount(), command.currency()), command.merchantReference(), PaymentStatus.PENDING, now, now);
+                Span.current().setAttribute("payment.id", paymentId.toString());
+                Span.current().setAttribute("event.id", eventId.toString());
                 store.insertPayment(payment, requestHash);
                 store.insertIdempotency(command.accountId(), keyDigest, requestHash, paymentId);
-                store.insertOutbox(eventId, payment, correlationId,
-                        eventPayload(eventId, payment, correlationId, now, command.simulationScenario()));
+                var outboxSpan = tracer.spanBuilder("outbox.persist").startSpan();
+                try (var ignored = outboxSpan.makeCurrent()) {
+                    outboxSpan.setAttribute("operation", "outbox.persist");
+                    outboxSpan.setAttribute("payment.id", paymentId.toString());
+                    outboxSpan.setAttribute("event.id", eventId.toString());
+                    var traceContext = TraceContextSnapshot.capture();
+                    store.insertOutbox(eventId, payment, correlationId,
+                            eventPayload(eventId, payment, correlationId, now, command.simulationScenario()),
+                            traceContext.traceparent(), traceContext.tracestate());
+                    outboxSpan.setAttribute("outcome", "persisted");
+                } catch (RuntimeException failure) {
+                    outboxSpan.recordException(failure);
+                    outboxSpan.setStatus(StatusCode.ERROR);
+                    throw failure;
+                } finally {
+                    outboxSpan.end();
+                }
                 store.insertAudit(paymentId, eventId, correlationId);
                 meters.counter("pixflow.payment.requests", "outcome", "created").increment();
                 log.atInfo().addKeyValue("operation", "payment_create").addKeyValue("paymentId", paymentId)

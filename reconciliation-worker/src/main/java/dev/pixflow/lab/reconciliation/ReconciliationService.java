@@ -17,10 +17,16 @@ import java.time.Duration;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.slf4j.MDC;
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.trace.Span;
+import io.opentelemetry.api.trace.StatusCode;
+import dev.pixflow.lab.observability.TraceContextSnapshot;
 
 @Service
 public class ReconciliationService {
     private static final Logger log = LoggerFactory.getLogger(ReconciliationService.class);
+    private static final io.opentelemetry.api.trace.Tracer tracer =
+            GlobalOpenTelemetry.getTracer("dev.pixflow.lab.reconciliation-worker");
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     private final PspLookupClient psp;
@@ -60,9 +66,16 @@ public class ReconciliationService {
     public Optional<ReconciliationClaim> claimNext() {
         return Optional.ofNullable(tx.execute(status -> {
             var candidate = jdbc.query("""
-                    SELECT j.payment_id,p.external_reference,j.attempt_count,j.max_attempts,j.correlation_id
+                    SELECT j.payment_id,p.external_reference,j.attempt_count,j.max_attempts,j.correlation_id,
+                           origin.trace_parent,origin.trace_state
                       FROM reconciliation_jobs j
                       JOIN payments p ON p.payment_id=j.payment_id
+                      LEFT JOIN LATERAL (
+                          SELECT o.trace_parent,o.trace_state
+                            FROM outbox_events o
+                           WHERE o.aggregate_id=p.payment_id AND o.event_type='payment.requested'
+                           ORDER BY o.created_at,o.event_id LIMIT 1
+                      ) origin ON true
                      WHERE j.completed_at IS NULL
                        AND j.attempt_count < j.max_attempts
                        AND j.next_attempt_at <= clock_timestamp()
@@ -73,7 +86,7 @@ public class ReconciliationService {
                      LIMIT 1
                      FOR UPDATE OF j,p SKIP LOCKED
                     """, (rs, row) -> new Candidate(rs.getObject(1, UUID.class), rs.getString(2), rs.getInt(3),
-                    rs.getInt(4), rs.getString(5))).stream().findFirst().orElse(null);
+                    rs.getInt(4), rs.getString(5), rs.getString(6), rs.getString(7))).stream().findFirst().orElse(null);
             if (candidate == null) return null;
 
             var claimToken = UUID.randomUUID();
@@ -100,7 +113,7 @@ public class ReconciliationService {
 
             var claim = new ReconciliationClaim(candidate.paymentId(), candidate.externalReference(),
                     identity.ownerId(), claimToken, lease.fencingToken(), lease.leaseUntil(), attempt,
-                    candidate.maxAttempts(), candidate.correlationId());
+                    candidate.maxAttempts(), candidate.correlationId(), candidate.traceParent(), candidate.traceState());
             audit(claim, "CLAIMED", null, "work claimed with PostgreSQL lease");
             return claim;
         }));
@@ -123,17 +136,35 @@ public class ReconciliationService {
     public void reconcile(ReconciliationClaim claim) {
         var sample = Timer.start(meters);
         var metricOutcome = "temporary_failure";
+        var original = new TraceContextSnapshot(claim.traceParent(), claim.traceState());
+        var spanBuilder = tracer.spanBuilder("reconciliation.resolve").setNoParent();
+        if (original.isValid()) spanBuilder.addLink(Span.fromContext(original.extract()).getSpanContext());
+        var span = spanBuilder.startSpan();
+        span.setAttribute("operation", "reconciliation.resolve");
+        span.setAttribute("payment.id", claim.paymentId().toString());
+        span.setAttribute("retry.count", claim.attemptNumber());
+        span.setAttribute("fencing.token", claim.fencingToken());
         MDC.put("correlationId", claim.correlationId());
         MDC.put("paymentId", claim.paymentId().toString());
         final PspLookupResult result;
-        try {
+        try (var scope = span.makeCurrent()) {
+            var lookupSpan = tracer.spanBuilder("reconciliation.psp.lookup").startSpan();
+            lookupSpan.setAttribute("payment.id", claim.paymentId().toString());
             try {
-                result = psp.lookup(claim.externalReference());
+                try (var lookupScope = lookupSpan.makeCurrent()) {
+                    result = psp.lookup(claim.externalReference());
+                    lookupSpan.setAttribute("outcome", result.status().name().toLowerCase());
+                }
             } catch (RuntimeException failure) {
+                lookupSpan.recordException(failure);
+                lookupSpan.setStatus(StatusCode.ERROR, failure.getClass().getSimpleName());
                 retry(claim, PspLookupResult.temporaryFailure(failure.getClass().getSimpleName() + ": " + failure.getMessage()));
                 return;
+            } finally {
+                lookupSpan.end();
             }
             metricOutcome = result.status().name().toLowerCase();
+            span.setAttribute("outcome", metricOutcome);
             afterLookup.afterLookup(claim, result);
             switch (result.status()) {
                 case APPROVED -> complete(claim, result, "SUCCEEDED", "RECONCILED_APPROVED", "CONFIRMED_APPROVED");
@@ -144,6 +175,7 @@ public class ReconciliationService {
             meters.counter("pixflow.reconciliation.attempts", "outcome", metricOutcome).increment();
             sample.stop(Timer.builder("pixflow.reconciliation.duration").tag("outcome", metricOutcome).register(meters));
             MDC.clear();
+            span.end();
         }
     }
 
@@ -324,11 +356,13 @@ public class ReconciliationService {
     private void insertResultOutbox(ReconciliationClaim claim, PaymentResultEvent event) {
         try {
             var payload = json.writeValueAsString(event);
+            var traceContext = TraceContextSnapshot.capture();
             jdbc.update("""
-                    INSERT INTO outbox_events(event_id,aggregate_id,aggregate_version,topic,event_type,payload_json,partition_key)
-                    SELECT ?,payment_id,version,?,'payment.result',?::jsonb,payment_id::text
+                    INSERT INTO outbox_events(event_id,aggregate_id,aggregate_version,topic,event_type,payload_json,partition_key,trace_parent,trace_state)
+                    SELECT ?,payment_id,version,?,'payment.result',?::jsonb,payment_id::text,?,?
                       FROM payments WHERE payment_id=?
-                    """, event.eventId(), properties.resultTopic(), payload, claim.paymentId());
+                    """, event.eventId(), properties.resultTopic(), payload,
+                    traceContext.traceparent(), traceContext.tracestate(), claim.paymentId());
         } catch (JsonProcessingException exception) {
             throw new IllegalStateException("could not serialize reconciliation result", exception);
         }
@@ -365,6 +399,6 @@ public class ReconciliationService {
     }
 
     private record Candidate(UUID paymentId, String externalReference, int attemptCount, int maxAttempts,
-            String correlationId) { }
+            String correlationId, String traceParent, String traceState) { }
     private record LeaseResult(long fencingToken, Instant leaseUntil) { }
 }

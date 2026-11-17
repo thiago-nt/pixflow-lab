@@ -6,10 +6,12 @@
   <modules>
     <module>shared-contracts</module><module>payment-api</module><module>outbox-relay</module>
     <module>payment-worker</module><module>psp-simulator</module><module>reconciliation-worker</module>
+    <module>shared-observability</module>
   </modules>
   <properties>
     <maven.compiler.release>21</maven.compiler.release><project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding><spring-boot.version>3.5.7</spring-boot.version>
+    <opentelemetry.version>1.54.1</opentelemetry.version>
   </properties>
   <dependencyManagement><dependencies><dependency><groupId>org.springframework.boot</groupId><artifactId>spring-boot-dependencies</artifactId><version>${spring-boot.version}</version><type>pom</type><scope>import</scope></dependency></dependencies></dependencyManagement>
   <build><pluginManagement><plugins><plugin><groupId>org.apache.maven.plugins</groupId><artifactId>maven-compiler-plugin</artifactId><version>3.14.1</version><configuration><release>${maven.compiler.release}</release></configuration></plugin></plugins></pluginManagement></build>

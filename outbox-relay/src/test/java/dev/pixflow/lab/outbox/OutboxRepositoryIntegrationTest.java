@@ -47,7 +47,7 @@ class OutboxRepositoryIntegrationTest {
     @BeforeAll
     static void schema() throws Exception {
         try (var connection = DriverManager.getConnection(postgres.getJdbcUrl(), postgres.getUsername(), postgres.getPassword())) {
-            for (var migration : List.of("V001__create_payment_core.sql", "V002__payment_api_pending_state.sql", "V003__outbox_claim_ownership.sql")) {
+            for (var migration : List.of("V001__create_payment_core.sql", "V002__payment_api_pending_state.sql", "V003__outbox_claim_ownership.sql", "V007__outbox_trace_context.sql")) {
                 var path = Path.of(System.getProperty("user.dir"), "infra", "postgres", "migrations", migration);
                 if (!Files.exists(path)) path = Path.of(System.getProperty("user.dir"), "..", "infra", "postgres", "migrations", migration);
                 ScriptUtils.executeSqlScript(connection, new FileSystemResource(path));

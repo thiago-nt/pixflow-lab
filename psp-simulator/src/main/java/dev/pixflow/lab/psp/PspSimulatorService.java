@@ -14,9 +14,13 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.beans.factory.ObjectProvider;
 import io.micrometer.core.instrument.MeterRegistry;
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry;
+import io.opentelemetry.api.GlobalOpenTelemetry;
+import io.opentelemetry.api.trace.StatusCode;
 
 @Service
 public class PspSimulatorService {
+    private static final io.opentelemetry.api.trace.Tracer tracer =
+            GlobalOpenTelemetry.getTracer("dev.pixflow.lab.psp-simulator");
     private final JdbcTemplate jdbc;
     private final MeterRegistry meters;
     public PspSimulatorService(JdbcTemplate jdbc, ObjectProvider<MeterRegistry> meterProvider) {
@@ -26,6 +30,24 @@ public class PspSimulatorService {
 
     @Transactional
     public ChargeResult charge(PspChargeRequest request) {
+        var span = tracer.spanBuilder("psp.payment.persist").startSpan();
+        span.setAttribute("operation", "psp.payment.execute");
+        span.setAttribute("payment.id", request.paymentId().toString());
+        try (var scope = span.makeCurrent()) {
+            var result = chargeWithinTrace(request);
+            span.setAttribute("outcome", result.transaction().outcome().name().toLowerCase());
+            span.setAttribute("financial.effect", result.created() ? "created" : "replay");
+            return result;
+        } catch (RuntimeException failure) {
+            span.recordException(failure);
+            span.setStatus(StatusCode.ERROR, failure.getClass().getSimpleName());
+            throw failure;
+        } finally {
+            span.end();
+        }
+    }
+
+    private ChargeResult chargeWithinTrace(PspChargeRequest request) {
         var id = UUID.randomUUID();
         var outcome = switch (request.simulationScenario()) {
             case REJECTED, REJECTED_TIMEOUT -> PspOutcome.REJECTED;
@@ -51,6 +73,18 @@ public class PspSimulatorService {
 
     @Transactional(readOnly = true)
     public Optional<PspTransactionView> findByReference(String reference) {
+        var span = tracer.spanBuilder("psp.payment.lookup").startSpan();
+        span.setAttribute("operation", "psp.payment.lookup");
+        try (var scope = span.makeCurrent()) {
+            var result = findByReferenceWithinTrace(reference);
+            span.setAttribute("outcome", result.map(item -> item.outcome().name().toLowerCase()).orElse("not_found"));
+            return result;
+        } finally {
+            span.end();
+        }
+    }
+
+    private Optional<PspTransactionView> findByReferenceWithinTrace(String reference) {
         var result = jdbc.query("""
                 SELECT transaction_id,payment_id,external_reference,amount_minor,currency,simulation_scenario,outcome,response_lost,created_at
                 FROM psp_simulator.transactions WHERE external_reference=?

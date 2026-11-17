@@ -1,0 +1,90 @@
+x-otel-environment: &otel-environment
+  JAVA_TOOL_OPTIONS: -javaagent:/app/opentelemetry-javaagent.jar
+  OTEL_TRACES_EXPORTER: otlp
+  OTEL_METRICS_EXPORTER: none
+  OTEL_LOGS_EXPORTER: none
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+  OTEL_PROPAGATORS: tracecontext,baggage
+  OTEL_RESOURCE_ATTRIBUTES: deployment.environment.name=pixflow-lab
+  OTEL_TRACES_SAMPLER: parentbased_traceidratio
+  OTEL_TRACES_SAMPLER_ARG: ${PIXFLOW_TRACE_SAMPLE_RATIO:-0.10}
+  OTEL_INSTRUMENTATION_LOGBACK_MDC_ENABLED: "true"
+  OTEL_INSTRUMENTATION_SPRING_SCHEDULING_ENABLED: "false"
+  OTEL_BSP_SCHEDULE_DELAY: 500
+  OTEL_BSP_MAX_EXPORT_BATCH_SIZE: 128
+  OTEL_JAVAAGENT_LOGGING: simple
+
+services:
+  payment-api:
+    environment:
+      <<: *otel-environment
+      OTEL_SERVICE_NAME: payment-api
+
+  outbox-relay:
+    environment:
+      <<: *otel-environment
+      OTEL_SERVICE_NAME: outbox-relay
+
+  payment-worker:
+    environment:
+      <<: *otel-environment
+      OTEL_SERVICE_NAME: payment-worker
+
+  psp-simulator:
+    environment:
+      <<: *otel-environment
+      OTEL_SERVICE_NAME: psp-simulator
+
+  reconciliation-worker:
+    environment:
+      <<: *otel-environment
+      OTEL_SERVICE_NAME: reconciliation-worker
+
+  tempo:
+    build:
+      context: .
+      dockerfile: infra/observability/tempo/Dockerfile
+    profiles: ["observe-traces"]
+    command: ["-config.file=/etc/tempo/tempo.yaml"]
+    volumes:
+      - ./infra/observability/tempo/tempo.yaml:/etc/tempo/tempo.yaml:ro
+      - tempo_data:/var/tempo
+    networks: [backend]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3200/ready | grep -q ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+    restart: unless-stopped
+    mem_limit: 512m
+    cpus: 0.5
+    security_opt: ["no-new-privileges:true"]
+
+  otel-collector:
+    build:
+      context: .
+      dockerfile: infra/observability/otel-collector/Dockerfile
+    profiles: ["observe-traces"]
+    command: ["--config=/etc/otelcol-contrib/config.yaml"]
+    volumes:
+      - ./infra/observability/otel-collector/config.yaml:/etc/otelcol-contrib/config.yaml:ro
+    networks: [backend]
+    depends_on:
+      tempo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:13133/ | grep -q Server"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    restart: unless-stopped
+    mem_limit: 256m
+    cpus: 0.5
+    security_opt: ["no-new-privileges:true"]
+
+volumes:
+  tempo_data:
+    name: pixflow-lab-tempo-data

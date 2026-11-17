@@ -10,9 +10,12 @@ import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 import io.micrometer.core.instrument.MeterRegistry;
+import io.opentelemetry.api.GlobalOpenTelemetry;
 
 @Service
 public class LeaseService {
+    private static final io.opentelemetry.api.trace.Tracer tracer =
+            GlobalOpenTelemetry.getTracer("dev.pixflow.lab.payment-worker");
     private final JdbcTemplate jdbc;
     private final TransactionTemplate tx;
     private final long ttlMillis;
@@ -31,7 +34,11 @@ public class LeaseService {
     }
 
     public Optional<PaymentLease> acquire(UUID paymentId, String ownerId, PaymentRequestedEvent event) {
-        PaymentLease acquired = tx.execute(status -> jdbc.query("""
+        var span = tracer.spanBuilder("payment.lease.acquire").startSpan();
+        span.setAttribute("payment.id", paymentId.toString());
+        final PaymentLease acquired;
+        try (var scope = span.makeCurrent()) {
+            acquired = tx.execute(status -> jdbc.query("""
                 UPDATE payments SET lease_owner=?, lease_until=clock_timestamp() + (? * interval '1 millisecond'),
                     fencing_token=fencing_token+1, version=version+1, updated_at=clock_timestamp()
                 WHERE payment_id=? AND status IN ('PENDING','PROCESSING','SENT_TO_PSP','UNKNOWN')
@@ -43,6 +50,11 @@ public class LeaseService {
                     appendEvent(lease,event,"ACQUIRED","lease granted by PostgreSQL clock");
                     return lease;
                 }).orElse(null));
+            span.setAttribute("outcome", acquired == null ? "busy" : "acquired");
+            if (acquired != null) span.setAttribute("fencing.token", acquired.fencingToken());
+        } finally {
+            span.end();
+        }
         meters.counter("pixflow.lease.acquisitions", "outcome", acquired == null ? "busy" : "acquired").increment();
         return Optional.ofNullable(acquired);
     }
@@ -75,12 +87,20 @@ public class LeaseService {
     }
 
     public void recordRejected(PaymentLease lease, PaymentRequestedEvent event, String detail) {
+        var span = tracer.spanBuilder("payment.fencing.validate").startSpan();
+        span.setAttribute("payment.id", lease.paymentId().toString());
+        span.setAttribute("fencing.token", lease.fencingToken());
+        span.setAttribute("outcome", "rejected");
         meters.counter("pixflow.fencing.rejections").increment();
-        tx.executeWithoutResult(status -> jdbc.update("""
-                INSERT INTO payment_lease_audit(lease_event_id,payment_id,owner_id,fencing_token,event_type,lease_until,event_id,correlation_id,detail)
-                VALUES (?,?,?,?,'WRITE_REJECTED',?, ?,?,?)
-                """,UUID.randomUUID(),lease.paymentId(),lease.ownerId(),lease.fencingToken(),
-                Timestamp.from(lease.leaseUntil()),event.eventId(),event.correlationId(),detail));
+        try (var scope = span.makeCurrent()) {
+            tx.executeWithoutResult(status -> jdbc.update("""
+                    INSERT INTO payment_lease_audit(lease_event_id,payment_id,owner_id,fencing_token,event_type,lease_until,event_id,correlation_id,detail)
+                    VALUES (?,?,?,?,'WRITE_REJECTED',?, ?,?,?)
+                    """,UUID.randomUUID(),lease.paymentId(),lease.ownerId(),lease.fencingToken(),
+                    Timestamp.from(lease.leaseUntil()),event.eventId(),event.correlationId(),detail));
+        } finally {
+            span.end();
+        }
     }
 
     public void defer(PaymentLease attemptedLease, PaymentRequestedEvent event, String payload, String detail) {

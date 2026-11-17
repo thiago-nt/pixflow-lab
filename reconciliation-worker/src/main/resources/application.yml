@@ -48,3 +48,5 @@ logging:
         environment: ${PIXFLOW_ENVIRONMENT:local}
       rename:
         "[@timestamp]": timestamp
+        "[trace_id]": traceId
+        "[span_id]": spanId

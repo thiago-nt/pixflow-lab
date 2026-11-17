@@ -33,6 +33,6 @@ class LabAfterKafkaAckFailureInjectorTest {
     private static ClaimedOutboxEvent event(UUID eventId) {
         var paymentId = UUID.randomUUID();
         return new ClaimedOutboxEvent(eventId, paymentId, 1, "payment.requested.v1", "payment.requested",
-                "{}", paymentId.toString(), Instant.now(), "test", UUID.randomUUID(), Instant.now().plusSeconds(30), 1);
+                "{}", paymentId.toString(), Instant.now(), null, null, "test", UUID.randomUUID(), Instant.now().plusSeconds(30), 1);
     }
 }

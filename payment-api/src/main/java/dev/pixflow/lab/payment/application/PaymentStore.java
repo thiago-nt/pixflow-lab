@@ -13,7 +13,8 @@ public interface PaymentStore {
 
     void insertIdempotency(String accountId, String keyDigest, String requestHash, UUID paymentId);
 
-    void insertOutbox(UUID eventId, Payment payment, String correlationId, String payloadJson);
+    void insertOutbox(UUID eventId, Payment payment, String correlationId, String payloadJson,
+            String traceParent, String traceState);
 
     void insertAudit(UUID paymentId, UUID eventId, String correlationId);
 

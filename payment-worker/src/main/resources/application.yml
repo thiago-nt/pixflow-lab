@@ -50,6 +50,8 @@ logging:
         environment: ${PIXFLOW_ENVIRONMENT:local}
       rename:
         "[@timestamp]": timestamp
+        "[trace_id]": traceId
+        "[span_id]": spanId
 pixflow:
   worker:
     group-id: ${PIXFLOW_WORKER_GROUP:pixflow-payment-worker-v1}

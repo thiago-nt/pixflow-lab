@@ -86,6 +86,6 @@ class OutboxPublisherTest {
         var paymentId = UUID.randomUUID();
         return new ClaimedOutboxEvent(UUID.randomUUID(), paymentId, 1, "payment.requested.v1",
                 "payment.requested", "{\"eventId\":\"test\",\"correlationId\":\"corr-test\"}", paymentId.toString(), Instant.now(),
-                "test-relay", UUID.randomUUID(), Instant.now().plusSeconds(30), 1);
+                null, null, "test-relay", UUID.randomUUID(), Instant.now().plusSeconds(30), 1);
     }
 }
